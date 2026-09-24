@@ -38,7 +38,7 @@ function verifyInitData(raw){
   if(!raw || raw.length>8192) fail(401,'Откройте приложение через Telegram');
   const p=new URLSearchParams(raw);const hash=p.get('hash');const authDate=Number(p.get('auth_date'));
   if(!hash || !/^[a-f0-9]{64}$/i.test(hash) || !authDate || Math.abs(Date.now()/1000-authDate)>86400) fail(401,'Сессия Telegram истекла. Откройте приложение заново');
-  p.delete('hash');p.delete('signature');
+  p.delete('hash');
   const check=Array.from(p.entries()).sort(([a],[b])=>a.localeCompare(b)).map(([k,v])=>`${k}=${v}`).join('\n');
   const secret=crypto.createHmac('sha256','WebAppData').update(process.env.BOT_TOKEN).digest();
   const expected=crypto.createHmac('sha256',secret).update(check).digest();
