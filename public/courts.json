@@ -1,0 +1,8 @@
+[
+  {"id":"dinamo","sport":"tennis","name":"Стадион «Динамо»","address":"ул. Красная, 190","surface":"теннисные корты","image":"/assets/dinamo.png","source":"https://dinamokuban.ru/"},
+  {"id":"vopreki-tennis","sport":"tennis","name":"Академия «Вопреки»","address":"ул. Невкипелого, 24/4","surface":"теннисные корты","image":"/assets/court_generic.svg","source":"https://xn--80aaghfbtclgs0ano5t.xn--p1ai/"},
+  {"id":"setbol","sport":"tennis","name":"Сетбол","address":"ул. Красных Партизан, 2/4","surface":"теннисный корт","image":"/assets/court_generic.svg","source":"https://centr-setbol.ru/"},
+  {"id":"padel360","sport":"padel","name":"360° Падел","address":"ул. Тополиная, 33А","surface":"падел-корты","image":"/assets/court_generic.svg","source":"https://360padel.ru/"},
+  {"id":"xfit-padel","sport":"padel","name":"XFit Юбилейный","address":"бульвар им. Клары Лучко, 1","surface":"крытый падел-корт","image":"/assets/court_generic.svg","source":"https://padel-tennis-xfit-umr.xfitkrasnodar.ru/"},
+  {"id":"vopreki-padel","sport":"padel","name":"«Вопреки» Padel Family","address":"ул. Невкипелого, 24/4","surface":"падел-корты","image":"/assets/court_generic.svg","source":"https://xn--80aaghfbtclgs0ano5t.xn--p1ai/"}
+]
