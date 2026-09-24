@@ -1,0 +1,10 @@
+data/
+node_modules/
+test/
+scripts/
+OPEN_DEMO.html
+RUN_DEMO.bat
+README.md
+RAILWAY_DEPLOY.md
+.env
+.git/
