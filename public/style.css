@@ -14,3 +14,166 @@
 .level-guide strong{min-width:25px;color:#1e633f}
 .level-guide span{color:#526555}
 @media(max-width:360px){.brand-logo{flex-basis:130px;width:130px;height:70px}.brand-logo img{width:149px;height:149px;transform:translate(-10px,-37px)}.city-pill{font-size:11px;padding:7px}.top{gap:5px}}
+
+/* Mobile polish and game discovery controls. */
+:root{--green:#1e633f;--ink:#183024;--line:#e1e9df;--surface:#fff}
+.app{background:#f7f9f5}
+.top{min-height:72px;padding:7px 16px 5px;border-bottom:1px solid #e9eee7;box-shadow:0 5px 18px #163d2410}
+.brand-logo{flex:0 0 132px;width:132px;height:63px}
+.brand-logo img{width:142px;height:142px;transform:translate(-5px,-33px)}
+.city-pill{font-size:11px;padding:7px 9px;background:#eaf3e7}
+.content{padding-top:12px}
+.hero{border-radius:22px;box-shadow:0 12px 30px #173d2924}
+.quick{gap:10px;margin-top:14px}
+.quick button{min-height:84px;border-radius:17px;padding:14px;font-size:14px;line-height:1.2;box-shadow:0 5px 16px #1b4e2a14}
+.quick .secondary{background:#e5f2de}
+.quick span{font-size:23px;line-height:1}
+.section-head{margin-top:24px}
+.section-head h2,.results-head strong{color:var(--ink);font-size:18px}
+.card,.form-card{border-color:var(--line);box-shadow:0 6px 18px #173b2608}
+.game-top{margin-bottom:10px}.game-date{white-space:nowrap;color:#365e44}
+.game-title{font-size:17px;line-height:1.25}
+.game-meta{gap:7px;margin:13px 0}.game-meta span{border-radius:8px;padding:5px 7px;background:#f0f5ee}
+.small-btn{min-height:38px;font-size:12px}.button{border-radius:13px}
+.nav{padding-top:9px;box-shadow:0 -8px 28px #173b2610}.nav button{min-height:46px;justify-content:center}.nav button.active i{background:#e8f2e4;border-radius:10px}.nav button i{padding:2px 9px}
+.page-heading{display:flex;align-items:center;justify-content:space-between;gap:14px}
+.page-heading .page-title{margin-top:3px}.page-heading .lead{margin-bottom:13px}
+.add-game{flex:0 0 43px;width:43px;height:43px;border-radius:14px;border:0;background:var(--green);color:#fff;font-size:25px;line-height:1;cursor:pointer}
+.search-panel{background:var(--surface);border:1px solid var(--line);border-radius:17px;padding:13px;margin:1px 0 15px;box-shadow:0 5px 17px #173b2608}
+.date-filters{display:flex;gap:6px;overflow-x:auto;scrollbar-width:none;margin-bottom:10px}
+.date-chip{flex:1 0 auto;min-height:34px;border:1px solid #e3ebe0;background:#f6f8f4;color:#5d6f61;border-radius:10px;padding:6px 8px;font-size:11px;font-weight:750;cursor:pointer}
+.date-chip.active{background:#e5f2df;border-color:#9acb92;color:#195b36}
+.search-panel .field{margin:0 0 10px}.search-panel select{margin-top:5px;min-height:41px;font-size:12px;background:#f9fbf8}
+.availability{display:flex;align-items:center;gap:8px;width:100%;border:0;background:none;text-align:left;padding:5px 1px;color:#657368;font-size:12px;font-weight:750;cursor:pointer}
+.availability-dot{width:17px;height:17px;border:1.5px solid #9db5a0;border-radius:6px;background:white;display:inline-grid;place-items:center;flex:none}
+.availability.active{color:var(--green)}.availability.active .availability-dot{border-color:var(--green);background:var(--green)}.availability.active .availability-dot:after{content:'✓';color:white;font-size:12px;line-height:1}
+.results-head{display:flex;justify-content:space-between;align-items:baseline;margin:19px 1px 10px}.results-head span{font-size:12px;color:#7b8b7d}
+.booking-card{display:flex;justify-content:space-between;align-items:center;gap:10px}.booking-card strong{font-size:13px}.booking-card .muted{margin-top:5px}.cancel-btn{color:#a44e45;white-space:nowrap;padding:8px 0}
+.chip{min-height:36px}.chip.active{box-shadow:0 4px 12px #1e633f24}
+button:active{transform:scale(.98)}
+@media(max-width:360px){.brand-logo{flex-basis:120px;width:120px;height:59px}.brand-logo img{width:131px;height:131px;transform:translate(-5px,-30px)}.top{gap:5px;padding-inline:12px}.city-pill{font-size:10px}.date-chip{font-size:10px;padding:5px 7px}.search-panel{padding:11px}}
+.top{min-height:91px}.brand-logo{flex:0 0 145px;width:145px;height:77px}.brand-logo img{width:155px;height:155px;transform:translate(-5px,-37px)}
+.top .avatar,.profile-banner .avatar,.profile-photo .avatar{overflow:hidden;flex-shrink:0}.avatar img{width:100%;height:100%;object-fit:cover;display:block}
+.hero{aspect-ratio:374/225}.hero img{height:auto;transform:translateY(-6.25%)}
+.sport-icon{display:inline-block;width:17px;height:17px;vertical-align:-3px;stroke-linecap:round;stroke-linejoin:round;flex:none}.badge .sport-icon{width:14px;height:14px;vertical-align:-3px}
+.profile-edit{margin:12px 0}.profile-level{margin-bottom:12px}.profile-level p{margin:8px 0 0;line-height:1.5}.profile-photo{display:flex;align-items:center;gap:13px;margin-bottom:12px}.profile-photo .avatar{height:64px;width:64px;font-size:25px}.profile-photo strong{font-size:13px}.profile-photo .hint{margin-top:3px}
+@media(max-width:360px){.top{min-height:81px}.brand-logo{flex-basis:124px;width:124px;height:68px}.brand-logo img{width:134px;height:134px;transform:translate(-5px,-31px)}}
+.avatar .tennis-avatar{display:block;width:100%;height:100%;border-radius:50%}
+.onboarding{padding-bottom:30px}.onboarding .page-title{margin-top:8px}.step-count{color:#2a7546;font-weight:850;font-size:11px;letter-spacing:.5px;text-transform:uppercase;margin-top:16px}
+.role-grid{display:grid;gap:12px;margin-top:24px}.role-card{border:1px solid #dce8d8;background:white;border-radius:19px;padding:20px;text-align:left;display:grid;gap:7px;cursor:pointer;color:#183024;box-shadow:0 8px 22px #173b2610}.role-card>span{font-size:27px}.role-card strong{font-size:18px}.role-card small{font-size:12px;line-height:1.4;color:#67796a}.role-card:focus-visible,.avatar-choice:focus-visible{outline:2px solid #2a7546;outline-offset:2px}
+.avatar-groups{display:grid;gap:14px;margin-top:18px}.avatar-group-title{font-size:12px;font-weight:800;color:#49644e}.avatar-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:8px;margin-top:7px}.avatar-choice{border:2px solid #e4ebe0;border-radius:14px;background:#f9fbf7;padding:8px 4px;display:grid;place-items:center;gap:5px;cursor:pointer;color:#45654a;font-size:11px;font-weight:750}.avatar-choice.selected{border-color:#2a7546;background:#eaf5e7}.avatar-choice .tennis-avatar{width:56px;height:56px;border-radius:50%}
+[hidden]{display:none!important}
+.avatar-sprite{display:block;width:100%;height:100%;border-radius:50%;background-image:url('/assets/tennis-avatars-v2.png');background-size:300% 200%;background-repeat:no-repeat}
+.avatar-male-serve{background-position:0% 0%}.avatar-male-cap{background-position:50% 0%}.avatar-male-court{background-position:100% 0%}
+.avatar-female-serve{background-position:0% 100%}.avatar-female-cap{background-position:50% 100%}.avatar-female-court{background-position:100% 100%}
+.profile-banner .avatar{background:#dcebd2}.profile-banner .avatar .avatar-sprite{width:100%;height:100%}
+.global-back{padding:8px 16px 0}.global-back button{border:0;background:none;color:#276541;font-size:13px;font-weight:800;padding:5px 0;cursor:pointer}
+.training-card .training-title{font-size:16px;font-weight:850;margin:7px 0}.training-card .training-people{font-size:11px;color:#657368;margin:10px 0}.training-card .button{margin-top:10px}.profile-edit+.button{margin:0 0 12px}
+.quick .training-action{grid-column:1/-1;min-height:58px;flex-direction:row;align-items:center;justify-content:flex-start;gap:10px}
+.compact-card{display:block;width:100%;text-align:left;cursor:pointer;font:inherit;color:inherit;padding:11px 12px;margin-bottom:7px;border-radius:13px}
+.compact-line{display:flex;align-items:center;gap:9px;justify-content:space-between;font-size:12px}.compact-line strong{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.compact-line>span{flex:none;font-size:11px;color:#315e41;font-weight:800;white-space:nowrap}.compact-sub{display:block;color:#738174;font-size:11px;line-height:1.35;margin-top:4px}.compact-empty{padding:15px;font-size:12px;color:#6b796e}
+.compact-training{display:flex;align-items:center;gap:10px}.compact-training .avatar{width:42px;height:42px;flex:none;overflow:hidden}.compact-main{min-width:0;flex:1}.compact-main strong{display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:12px}.compact-main .compact-sub{margin-top:2px}.compact-arrow{color:#497257;font-size:24px;line-height:1}
+.training-heading{display:flex;align-items:center;gap:10px}.training-heading .avatar{width:48px;height:48px;flex:none;overflow:hidden}.training-heading>div{min-width:0;flex:1}.training-heading strong{display:block;font-size:14px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.training-heading small{display:block;font-size:11px;color:#748575;margin-top:3px}.training-date{font-size:11px;font-weight:800;color:#315e41;white-space:nowrap}.training-card .training-title{font-size:14px;margin:10px 0 4px}.training-card .game-meta{margin:9px 0}.training-card .training-people{margin:8px 0}
+.nav button{line-height:1.12;text-align:center;padding:0 2px;min-width:0}.nav button i{margin-bottom:2px}
+.home-section{margin:20px -5px 0;padding:13px 10px 6px;border-radius:19px;border:1px solid;box-shadow:0 6px 18px #173b260b}
+.home-section .section-head{margin:0 1px 13px;align-items:center}
+.home-section .section-head h2{font-size:17px}
+.home-section .compact-card:last-child{margin-bottom:2px}
+.games-section{background:#eaf4ea;border-color:#d4e8d4}
+.trainings-section{background:#eaf4ea;border-color:#d4e8d4}
+.games-section .compact-card{border-left:3px solid #338653}
+.trainings-section .compact-card{border-left:3px solid #338653}
+.listing-tag{display:inline-flex;align-items:center;gap:3px;background:#646e73;color:#fff;border-radius:7px;padding:5px 8px;font-size:10px;font-weight:900;letter-spacing:.45px;white-space:nowrap;line-height:1.1}
+.listing-tag.training-tag,.listing-tag.pair-tag{background:#646e73;color:#fff}
+.listing-row{display:flex;gap:7px;align-items:center;flex-wrap:wrap;margin-top:12px}
+.training-format-label{display:inline-block;background:#646e73;border:1px solid #646e73;border-radius:8px;padding:5px 8px;color:#fff;font-size:12px;font-weight:850;line-height:1.2}
+.places-pill{background:#e9f5e9;border-radius:7px;padding:4px 7px;color:#216943}.places-pill.full{background:#f6ece9;color:#965745}
+.game-top{flex-wrap:wrap}.game-date{margin-left:auto}
+.compact-line{flex-wrap:wrap}.compact-line>span:last-child{margin-left:auto}.compact-title{display:block;margin-top:6px;font-size:12px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.compact-training{align-items:flex-start}.compact-training .avatar{margin-top:3px}.compact-training .compact-line{margin-bottom:5px}.compact-training .training-format-label{font-size:11px;padding:3px 6px;margin-top:4px}.compact-training .compact-sub{white-space:normal}
+.quick>button:not(.training-action){min-height:54px;padding:10px 12px;border-radius:13px;flex-direction:row;align-items:center;justify-content:flex-start;gap:7px;font-size:12px;white-space:nowrap}
+.quick>button:not(.training-action) span{font-size:17px;line-height:1}
+@media(max-width:350px){.quick>button:not(.training-action){padding:9px 8px;font-size:11px;gap:4px}}
+/* Home listing: quiet minimal layout */
+.home-section{margin:25px 0 0;padding:0;border:0;border-radius:0;background:transparent;box-shadow:none}
+.home-section .section-head{margin:0 0 10px;padding:0 1px 10px;border-bottom:1px solid #dce6de}
+.home-section .section-head h2{font-size:18px;color:#1d3328}
+.home-section .text-btn{color:#2e7850}
+.home-section .compact-card{margin-bottom:8px;padding:12px 13px;border:1px solid #edf0e9;border-radius:16px;background:#fff;box-shadow:0 8px 20px #203a2720}
+.home-section .compact-card:last-child{margin-bottom:0}
+.games-section .compact-card{border-left:3px solid #2e7850}
+.trainings-section .compact-card{border-left:1px solid #edf0e9}
+.home-section .compact-line{display:flex;align-items:baseline;gap:7px;justify-content:space-between;flex-wrap:wrap}
+.home-section .compact-kicker{color:#73847a;font-size:10px;font-weight:850;letter-spacing:.35px;white-space:nowrap}
+.home-section .compact-date,.home-section .compact-line>span:last-child{color:#73847a;font-size:10px;font-weight:550;white-space:nowrap;margin-left:auto}
+.home-section .compact-title{font-size:13px;color:#1d3328;margin:9px 0 0;white-space:normal;line-height:1.3}
+.home-section .compact-footer{display:flex;align-items:baseline;justify-content:space-between;gap:5px;margin-top:14px;color:#73847a;font-size:10px;line-height:1.2}
+.home-section .compact-footer span{white-space:nowrap}
+.home-section .compact-places{color:#2e7850;font-weight:850}
+.home-section .compact-price{color:#1d3328;font-weight:850}
+.home-section .compact-training{gap:10px;align-items:center}
+.home-section .compact-training .avatar{width:42px;height:42px;margin:0;flex:none}
+.home-section .compact-training .compact-main{min-width:0;flex:1}
+.home-section .compact-training .compact-trainer{display:block;margin-top:7px;color:#1d3328;font-size:13px;white-space:normal;line-height:1.25}
+.home-section .compact-training .compact-format{display:block;margin-top:4px;color:#73847a;font-size:10px;line-height:1.3}
+.home-section .compact-training .compact-footer{margin-top:11px}
+@media(max-width:360px){.home-section .compact-footer{font-size:9px}.home-section .compact-kicker,.home-section .compact-date{font-size:9px}}
+/* The interior tabs use the same quiet surfaces as the home list. */
+.subpage .page-title{color:#1d3328}
+.subpage .section-head{padding-bottom:10px;border-bottom:1px solid #dce6de}
+.subpage .section-head h2,.subpage .results-head strong{color:#1d3328}
+.subpage .search-panel{background:#fff;border-color:#edf0e9;box-shadow:0 8px 20px #203a2710}
+.subpage .card,.subpage .form-card,.subpage .rating-box{background:#fff;border-color:#edf0e9;box-shadow:0 8px 20px #203a2715}
+.subpage .profile-banner{background:#fff;color:#1d3328;border:1px solid #edf0e9;box-shadow:0 8px 20px #203a2715}
+.subpage .profile-banner p{color:#73847a}
+.subpage .detail-cover{background:#fff;color:#1d3328;border:1px solid #edf0e9;box-shadow:0 8px 20px #203a2715}
+.subpage .detail-cover .eyebrow{color:#2e7850}
+.subpage .profile-banner .avatar{width:56px;height:56px}
+.subpage .profile-info{margin-top:12px}
+.city-pill{max-width:110px;overflow:hidden;text-overflow:ellipsis}
+.coach-sports label{display:flex;align-items:center;justify-content:center;gap:6px}
+.coach-sports .sport-icon{width:18px;height:18px;flex:none}
+.contact-card{margin-top:12px}
+.contact-links{display:flex;flex-wrap:wrap;gap:9px;margin-top:10px}
+.contact-links a{display:inline-flex;align-items:center;min-height:36px;padding:8px 11px;border-radius:10px;background:#edf4e9;color:#1e633f;font-size:12px;font-weight:750;text-decoration:none;overflow-wrap:anywhere}
+.profile-facts{display:flex;flex-wrap:wrap;gap:8px;color:#2e7850;font-size:12px;font-weight:750}
+.listing-card{padding:14px;margin-bottom:9px}
+.subpage .game-list-card{border-left:3px solid #2e7850}
+.listing-head{display:flex;align-items:baseline;justify-content:space-between;gap:8px;flex-wrap:wrap}
+.listing-kicker{font-size:10px;font-weight:850;color:#73847a;letter-spacing:.35px}
+.listing-date{font-size:11px;color:#73847a;white-space:nowrap}
+.listing-card .game-title{margin:9px 0 3px;color:#1d3328;font-size:15px}
+.listing-address{margin:3px 0 0;color:#73847a;font-size:11px;line-height:1.35}
+.listing-meta{display:flex;align-items:baseline;justify-content:space-between;gap:6px;flex-wrap:wrap;margin-top:13px;padding-top:10px;border-top:1px solid #edf0e9;font-size:11px;color:#73847a}
+.listing-meta strong{color:#1d3328;white-space:nowrap}
+.listing-places{color:#2e7850;font-weight:850}
+.listing-bottom{display:flex;align-items:center;justify-content:space-between;gap:8px;margin-top:12px}
+.listing-bottom .small-btn{min-height:32px}
+.listing-trainer{display:flex;align-items:center;gap:9px;margin-top:10px}
+.listing-trainer .avatar{width:42px;height:42px;flex:none;overflow:hidden}
+.listing-trainer>div{min-width:0}
+.listing-trainer strong{display:block;color:#1d3328;font-size:14px}
+.listing-trainer small{display:block;margin-top:4px;color:#73847a;font-size:11px}
+.participant-strip{display:inline-flex;align-items:center;padding-left:4px;vertical-align:middle;margin-right:5px}
+.participant-mini,.participant-more{display:inline-grid;place-items:center;overflow:hidden;width:23px;height:23px;border-radius:50%;border:2px solid #fff;margin-left:-5px;background:#dcebd2;color:#286543;font-size:10px;font-weight:800}
+.participant-mini img,.participant-mini .tennis-avatar{width:100%;height:100%;object-fit:cover}
+.participant-none{font-size:10px;color:#73847a}
+.compact-places{display:inline-flex;align-items:center;gap:2px}
+.compact-places .participant-strip{margin-right:3px}
+.home-section .compact-footer .participant-mini{width:18px;height:18px;font-size:8px}
+.participant-row{display:flex;align-items:center;gap:10px;width:100%;padding:9px 0;border:0;border-top:1px solid #edf0e9;background:none;color:#1d3328;text-align:left;cursor:pointer}
+.participant-row:first-of-type{border-top:0}
+.participant-row .avatar{width:38px;height:38px;flex:none;overflow:hidden}
+.participant-row strong{font-size:13px}
+.participant-row small{display:block;margin-top:3px;color:#73847a;font-size:11px}
+.participant-next{margin-left:auto;color:#2e7850;font-size:11px;font-weight:800;white-space:nowrap}
+.filter-row{display:grid;grid-template-columns:1fr 1fr;gap:9px}
+.training-filters .field{margin-bottom:10px}
+.court-multiselect{border:1px solid #dce6de;border-radius:11px;background:#fafcf9}
+.court-multiselect summary{padding:11px 12px;cursor:pointer;color:#1d3328;font-size:12px;font-weight:800}
+.court-checks{max-height:240px;overflow:auto;padding:0 10px 9px}
+.court-checks label{display:flex;align-items:center;gap:10px;padding:8px 3px;border-top:1px solid #edf0e9;cursor:pointer}
+.court-checks input{width:18px;height:18px;min-height:18px;margin:0;accent-color:#2e7850;flex:none}
+.court-checks strong{display:block;font-size:12px;color:#1d3328}
+.court-checks small{display:block;margin-top:2px;color:#73847a;font-size:10px}
+@media(max-width:360px){.listing-head{gap:4px}.listing-kicker,.listing-date{font-size:9px}.listing-meta{font-size:10px}.participant-next{font-size:10px}}

@@ -43,6 +43,11 @@ DB_PATH=/var/data/tennis-go.sqlite
 - **Build failed**: проверьте, что `Dockerfile` лежит в корне репозитория, а не внутри дополнительной папки.
 - **Application failed to respond**: откройте Railway → Deployments → Logs. Проверьте `DB_PATH=/var/data/tennis-go.sqlite` и путь подключения тома `/var/data`.
 - **«Откройте приложение через Telegram» в обычном браузере**: при заданном `BOT_TOKEN` это ожидаемо; проверяйте через кнопку бота.
+- **«Неверная подпись Telegram»**: убедитесь, что `BOT_TOKEN` получен именно для бота, из которого открываете приложение. Если в GitHub осталась версия `server.mjs` до исправления проверки поля `signature`, замените этот файл и дождитесь нового деплоя: кнопка Redeploy повторно запускает старый код.
 - **Ссылка на игру не открывается**: настройте Main Mini App у бота и проверьте `BOT_USERNAME`.
+
+## Обновление работающего приложения
+
+Для версии 0.12.0 замените в GitHub файлы `server.mjs`, `public/app.js`, `public/style.css` и добавьте `public/cities.json` из нового архива. Файл `cities.json` нужен серверу при запуске. Если аватарки версии 0.5.0 ещё не загружены, добавьте `public/assets/tennis-avatars-v2.png`. Остальные файлы нужны для локального демо и проверок. После коммита дождитесь нового развёртывания из GitHub; **Redeploy** старого развёртывания не забирает новые файлы. База на подключённом Volume сохранится.
 
 Справка: [Dockerfile](https://docs.railway.com/builds/dockerfiles), [Volumes](https://docs.railway.com/volumes), [Public Networking](https://docs.railway.com/networking/public-networking), [Telegram Mini Apps](https://core.telegram.org/bots/webapps).
