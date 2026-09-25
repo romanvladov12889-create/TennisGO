@@ -25,16 +25,11 @@ test('game lifecycle and mutual confirmation preserve self selected NTRP',async(
  assert.equal((await request('/me','demo-player-0001')).data.user.registered,0);
  assert.equal((await request('/games','demo-player-0001')).status,403);
  const pixel='data:image/jpeg;base64,'+Buffer.from([0xff,0xd8,0xff,0xd9]).toString('base64');
- const profile=await request('/profile','demo-player-0001','POST',{...registration('Роман Игрок','female'),city:'Анапа',phone:'+7 (999) 123-45-67',telegramContact:'@roman_tennis',photoData:pixel});
- assert.equal(profile.status,200);assert.equal(profile.data.user.name,'Роман Игрок');assert.equal(profile.data.user.ntrpLevel,3.5);assert.equal(profile.data.user.photoData,pixel);assert.equal(profile.data.user.registered,1);assert.equal(profile.data.user.city,'Анапа');assert.equal(profile.data.user.phone,'+7 (999) 123-45-67');assert.equal(profile.data.user.telegramContact,'roman_tennis');
- assert.equal((await request('/profile','demo-player-0001','POST',{...registration('Роман','female'),city:'Неизвестный город'})).status,400);
- assert.equal((await request('/profile','demo-player-0001','POST',{...registration('Роман','female'),phone:'123'})).status,400);
- assert.equal((await request('/profile','demo-player-0001','POST',{...registration('Роман','female'),telegramContact:'https://t.me/example'})).status,400);
+ const profile=await request('/profile','demo-player-0001','POST',{...registration('Роман Игрок','female'),photoData:pixel});
+ assert.equal(profile.status,200);assert.equal(profile.data.user.name,'Роман Игрок');assert.equal(profile.data.user.ntrpLevel,3.5);assert.equal(profile.data.user.photoData,pixel);assert.equal(profile.data.user.registered,1);
  assert.equal((await request('/profile','demo-player-0001','POST',{...registration('','female'),ntrpLevel:8})).status,400);
  assert.equal((await request('/profile','demo-player-0002','POST',registration('Вика','female'))).status,200);
  assert.equal((await request('/profile','demo-player-0003','POST',registration('Игорь','male'))).status,200);
- const publicProfile=await request('/users/demo-player-0001','demo-player-0002');assert.equal(publicProfile.status,200);assert.equal(publicProfile.data.user.name,'Роман Игрок');assert.equal(publicProfile.data.user.ntrpLevel,3.5);assert.equal(publicProfile.data.user.photoData,pixel);assert.equal(publicProfile.data.user.city,'Анапа');assert.equal(publicProfile.data.user.telegramContact,'roman_tennis');assert.equal(publicProfile.data.user.username,undefined);
- assert.equal((await request('/users/demo-unknown-0001','demo-player-0002')).status,404);
  const previousTraining=(await request('/trainings','demo-player-0001')).data.trainings.find(t=>t.id==='11111111-1111-4111-8111-111111111111');
  assert.equal(previousTraining.ntrpMin,3.5);assert.equal(previousTraining.ntrpMax,3.5);
  const start=new Date(Date.now()+4*3600000).toISOString();
@@ -43,8 +38,6 @@ test('game lifecycle and mutual confirmation preserve self selected NTRP',async(
  assert.equal((await request(`/games/${id}/join`,'demo-player-0003','POST')).status,403);
  const invalid=await request('/games','demo-player-0001','POST',{sport:'padel',kind:'friendly',seats:4,courtId:'dinamo',startsAt:start,duration:60,levelMin:2.5,levelMax:3.5,price:800});assert.equal(invalid.status,400);
  const join=await request(`/games/${id}/join`,'demo-player-0002','POST');assert.equal(join.status,200);assert.equal(join.data.game.members.length,2);
- assert.equal(join.data.game.members.find(m=>m.id==='demo-player-0001').photoData,pixel);
- assert.equal(join.data.game.members.find(m=>m.id==='demo-player-0002').avatarId,'female-serve');
  assert.equal((await request(`/games/${id}/join`,'demo-player-0002','POST')).status,409);
  assert.equal((await request(`/games/${id}/result`,'demo-player-0001','POST',{score:'6:4, 6:3'})).status,409);
  db.prepare('UPDATE games SET starts_at=? WHERE id=?').run(new Date(Date.now()-3*3600000).toISOString(),id);
@@ -55,9 +48,8 @@ test('game lifecycle and mutual confirmation preserve self selected NTRP',async(
  assert.equal((await request(`/games/${id}/confirm`,'demo-player-0002','POST')).status,409);
 });
 test('coach registration and avatar persist',async()=>{
- const coach=await request('/profile','demo-coach-0004','POST',{...registration('Мария','female','coach'),coachYears:6,coachSports:['tennis','padel'],photoData:coachPhoto});
- assert.equal(coach.status,200);assert.equal(coach.data.user.role,'coach');assert.equal(coach.data.user.coachYears,6);assert.equal(coach.data.user.avatarId,'female-serve');assert.equal(coach.data.user.ntrpLevel,null);assert.deepEqual(coach.data.user.coachSports,['tennis','padel']);
- assert.equal((await request('/profile','demo-coach-0005','POST',{...registration('Иван','male','coach'),coachSports:[]})).status,400);
+ const coach=await request('/profile','demo-coach-0004','POST',{...registration('Мария','female','coach'),coachYears:6,photoData:coachPhoto});
+ assert.equal(coach.status,200);assert.equal(coach.data.user.role,'coach');assert.equal(coach.data.user.coachYears,6);assert.equal(coach.data.user.avatarId,'female-serve');assert.equal(coach.data.user.ntrpLevel,null);
  assert.equal((await request('/profile','demo-coach-0005','POST',{...registration('Иван','male','coach'),coachYears:-1})).status,400);
 });
 test('coach publishes training and players reserve available places',async()=>{
@@ -70,16 +62,13 @@ test('coach publishes training and players reserve available places',async()=>{
  const padelTraining=await request('/trainings','demo-coach-0004','POST',{...payload,sport:'padel',courtId:'padel360'});assert.equal(padelTraining.status,201);assert.equal(padelTraining.data.training.sport,'padel');assert.equal(padelTraining.data.training.courtId,'padel360');
  assert.equal((await request('/trainings','demo-coach-0004','POST',{...payload,ntrpMin:4,ntrpMax:2.5})).status,400);
  assert.equal((await request('/trainings','demo-coach-0004','POST',{...payload,ntrpMin:null})).status,400);
- const created=await request('/trainings','demo-coach-0004','POST',payload);assert.equal(created.status,201);assert.equal(created.data.training.sport,'tennis');assert.equal(created.data.training.coachGender,'female');assert.equal(created.data.training.ntrpMin,2.5);assert.equal(created.data.training.ntrpMax,4);assert.equal(created.data.training.format,'split');assert.equal(created.data.training.coachName,'Мария');assert.equal(created.data.training.coachYears,6);assert.equal(created.data.training.coachAvatarId,'female-serve');assert.equal(created.data.training.coachPhotoData,coachPhoto);const id=created.data.training.id;
+ const created=await request('/trainings','demo-coach-0004','POST',payload);assert.equal(created.status,201);assert.equal(created.data.training.sport,'tennis');assert.equal(created.data.training.ntrpMin,2.5);assert.equal(created.data.training.ntrpMax,4);assert.equal(created.data.training.format,'split');assert.equal(created.data.training.coachName,'Мария');assert.equal(created.data.training.coachYears,6);assert.equal(created.data.training.coachAvatarId,'female-serve');assert.equal(created.data.training.coachPhotoData,coachPhoto);const id=created.data.training.id;
  const unrestricted=await request('/trainings','demo-coach-0004','POST',{...payload,ntrpMin:null,ntrpMax:null});assert.equal(unrestricted.status,201);assert.equal(unrestricted.data.training.ntrpMin,null);
  assert.equal((await request(`/trainings/${id}/join`,'demo-coach-0004','POST')).status,409);
  assert.equal((await request(`/trainings/${id}/join`,'demo-player-0001','POST')).status,200);
  assert.equal((await request(`/trainings/${id}/join`,'demo-player-0002','POST')).status,200);
- const members=(await request('/trainings','demo-player-0002')).data.trainings.find(t=>t.id===id).members;assert.equal(members.find(m=>m.id==='demo-player-0001').photoData,coachPhoto);assert.equal(members.find(m=>m.id==='demo-player-0002').avatarId,'female-serve');
  assert.equal((await request(`/trainings/${id}/join`,'demo-player-0003','POST')).status,409);
  const listing=await request('/trainings','demo-coach-0004');assert.equal(listing.data.trainings.find(t=>t.id===id).members.length,2);
- const updated=await request('/profile','demo-coach-0004','POST',{...registration('Мария','female','coach'),coachYears:6,coachSports:['tennis'],photoData:coachPhoto});assert.equal(updated.status,200);
- assert.equal((await request('/trainings','demo-coach-0004','POST',{...payload,sport:'padel',courtId:'padel360'})).status,403);
  assert.equal((await request(`/trainings/${id}/leave`,'demo-player-0002','POST')).status,200);
  assert.equal((await request(`/trainings/${id}/join`,'demo-player-0003','POST')).status,200);
 });

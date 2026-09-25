@@ -48,6 +48,6 @@ DB_PATH=/var/data/tennis-go.sqlite
 
 ## Обновление работающего приложения
 
-Для версии 0.12.0 замените в GitHub файлы `server.mjs`, `public/app.js`, `public/style.css` и добавьте `public/cities.json` из нового архива. Файл `cities.json` нужен серверу при запуске. Если аватарки версии 0.5.0 ещё не загружены, добавьте `public/assets/tennis-avatars-v2.png`. Остальные файлы нужны для локального демо и проверок. После коммита дождитесь нового развёртывания из GitHub; **Redeploy** старого развёртывания не забирает новые файлы. База на подключённом Volume сохранится.
+Для версии 0.10.0 после установки 0.8.0 достаточно заменить в GitHub файлы `public/app.js` и `public/style.css` из нового архива. Если версия 0.8.0 ещё не установлена, замените также `server.mjs`: он добавляет вид спорта тренировок в базу и сохраняет старые записи. Если аватарки версии 0.5.0 ещё не загружены, добавьте `public/assets/tennis-avatars-v2.png`. Остальные файлы нужны для локального демо и проверок. После коммита дождитесь нового развёртывания из GitHub; **Redeploy** старого развёртывания не забирает новые файлы. База на подключённом Volume сохранится. Фото, имя и стаж тренера для объявлений берутся из его профиля.
 
 Справка: [Dockerfile](https://docs.railway.com/builds/dockerfiles), [Volumes](https://docs.railway.com/volumes), [Public Networking](https://docs.railway.com/networking/public-networking), [Telegram Mini Apps](https://core.telegram.org/bots/webapps).
