@@ -32,7 +32,7 @@ DB_PATH=/var/data/tennis-go.sqlite
 
 ## 5. Получите HTTPS адрес
 
-В сервисе откройте **Settings → Networking → Public Networking → Generate Domain**. Railway выдаст адрес вида `https://tennis-go-....up.railway.app` с автоматическим TLS сертификатом. Откройте `https://ВАШ_АДРЕС/api/config`: должен вернуться JSON с `"demo":false` и именем бота.
+В сервисе откройте **Settings → Networking → Public Networking → Generate Domain**. Railway выдаст адрес вида `https://tennis-go-....up.railway.app` с автоматическим TLS сертификатом. Откройте `https://ВАШ_АДРЕС/api/config`: должен вернуться JSON с `"demo":false`, именем бота и текущей версией приложения. Для этой сборки версия — `0.14.0`. Проверить прогноз можно по адресу `https://ВАШ_АДРЕС/api/weather`: `status: "ok"` означает успешную загрузку, `status: "unavailable"` — ошибка запроса к погодному сервису; подробность будет в логах Railway.
 
 ## 6. Настройте запуск из Telegram
 
@@ -48,6 +48,6 @@ DB_PATH=/var/data/tennis-go.sqlite
 
 ## Обновление работающего приложения
 
-Для версии 0.10.0 после установки 0.8.0 достаточно заменить в GitHub файлы `public/app.js` и `public/style.css` из нового архива. Если версия 0.8.0 ещё не установлена, замените также `server.mjs`: он добавляет вид спорта тренировок в базу и сохраняет старые записи. Если аватарки версии 0.5.0 ещё не загружены, добавьте `public/assets/tennis-avatars-v2.png`. Остальные файлы нужны для локального демо и проверок. После коммита дождитесь нового развёртывания из GitHub; **Redeploy** старого развёртывания не забирает новые файлы. База на подключённом Volume сохранится. Фото, имя и стаж тренера для объявлений берутся из его профиля.
+Для версии 0.14.0, особенно если прошлые обновления ещё не загружены, распакуйте архив и загрузите в GitHub всё содержимое проекта, сохранив структуру папок: `server.mjs`, `package.json`, `Dockerfile` и всю папку `public/`. Файл `public/cities.json` нужен серверу при запуске. При коммерческом использовании прогноза настройте платный Open-Meteo и переменную `WEATHER_API_KEY`; без ключа действует бесплатный режим для некоммерческого прототипа. После коммита дождитесь нового развёртывания из GitHub; **Redeploy** старого развёртывания не забирает новые файлы. База на подключённом Volume сохранится, включая новые сообщения.
 
 Справка: [Dockerfile](https://docs.railway.com/builds/dockerfiles), [Volumes](https://docs.railway.com/volumes), [Public Networking](https://docs.railway.com/networking/public-networking), [Telegram Mini Apps](https://core.telegram.org/bots/webapps).
