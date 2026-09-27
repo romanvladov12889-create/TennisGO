@@ -27,6 +27,7 @@ test('game lifecycle and mutual confirmation preserve self selected NTRP',async(
  const pixel='data:image/jpeg;base64,'+Buffer.from([0xff,0xd8,0xff,0xd9]).toString('base64');
  const profile=await request('/profile','demo-player-0001','POST',{...registration('Роман Игрок','female'),city:'Анапа',phone:'+7 (999) 123-45-67',telegramContact:'@roman_tennis',photoData:pixel});
  assert.equal(profile.status,200);assert.equal(profile.data.user.name,'Роман Игрок');assert.equal(profile.data.user.ntrpLevel,3.5);assert.equal(profile.data.user.photoData,pixel);assert.equal(profile.data.user.registered,1);assert.equal(profile.data.user.city,'Анапа');assert.equal(profile.data.user.phone,'+7 (999) 123-45-67');assert.equal(profile.data.user.telegramContact,'roman_tennis');
+ const emptyProgress=await request('/progress','demo-player-0001');assert.equal(emptyProgress.status,200);assert.equal(emptyProgress.data.totalGames,0);assert.equal(emptyProgress.data.totalTrainings,0);assert.equal(emptyProgress.data.months.length,5);
  assert.equal((await request('/profile','demo-player-0001','POST',{...registration('Роман','female'),city:'Неизвестный город'})).status,400);
  assert.equal((await request('/profile','demo-player-0001','POST',{...registration('Роман','female'),phone:'123'})).status,400);
  assert.equal((await request('/profile','demo-player-0001','POST',{...registration('Роман','female'),telegramContact:'https://t.me/example'})).status,400);
@@ -39,7 +40,7 @@ test('game lifecycle and mutual confirmation preserve self selected NTRP',async(
  assert.equal(previousTraining.ntrpMin,3.5);assert.equal(previousTraining.ntrpMax,3.5);
  const start=new Date(Date.now()+4*3600000).toISOString();
  const create=await request('/games','demo-player-0001','POST',{sport:'tennis',kind:'rating',seats:2,city:'Краснодар',courtId:'dinamo',startsAt:start,duration:60,levelMin:2.5,levelMax:3.5,price:1200,note:'Тест',opponentGender:'female'});
- assert.equal(create.status,201);assert.equal(create.data.game.courtAddress,'ул. Красная, 190');assert.equal(create.data.game.opponentGender,'female');assert.equal(create.data.game.creatorGender,'female');assert.equal(create.data.game.creatorNtrp,3.5);assert.equal(create.data.game.creatorRole,'player');const id=create.data.game.id;
+ assert.equal(create.status,201);assert.equal(create.data.game.courtAddress,'ул. Красная, 190');assert.equal(create.data.game.creatorName,'Роман Игрок');assert.equal(create.data.game.creatorPhotoData,pixel);assert.equal(create.data.game.opponentGender,'female');assert.equal(create.data.game.creatorGender,'female');assert.equal(create.data.game.creatorNtrp,3.5);assert.equal(create.data.game.creatorRole,'player');const id=create.data.game.id;
  assert.equal((await request(`/games/${id}/join`,'demo-player-0003','POST')).status,403);
  const invalid=await request('/games','demo-player-0001','POST',{sport:'padel',kind:'friendly',seats:4,courtId:'dinamo',startsAt:start,duration:60,levelMin:2.5,levelMax:3.5,price:800});assert.equal(invalid.status,400);
  const join=await request(`/games/${id}/join`,'demo-player-0002','POST');assert.equal(join.status,200);assert.equal(join.data.game.members.length,2);
@@ -48,10 +49,25 @@ test('game lifecycle and mutual confirmation preserve self selected NTRP',async(
  assert.equal((await request(`/games/${id}/join`,'demo-player-0002','POST')).status,409);
  assert.equal((await request(`/games/${id}/result`,'demo-player-0001','POST',{score:'6:4, 6:3'})).status,409);
  db.prepare('UPDATE games SET starts_at=? WHERE id=?').run(new Date(Date.now()-3*3600000).toISOString(),id);
+ assert.equal((await request(`/games/${id}/result`,'demo-player-0001','POST',{score:'6:4, 6:3'})).status,409);
+ assert.equal((await request(`/games/${id}/attend`,'demo-player-0001','POST')).status,200);
+ assert.equal((await request(`/games/${id}/confirm-attendance`,'demo-player-0002','POST')).status,200);
+ assert.equal((await request(`/games/${id}/result`,'demo-player-0001','POST',{score:'9:2, 6:3'})).status,400);
  const reported=await request(`/games/${id}/result`,'demo-player-0001','POST',{score:'6:4, 6:3'});assert.equal(reported.status,200);assert.equal(reported.data.game.resultConfirmed,false);
+ assert.equal((await request(`/games/${id}/dispute`,'demo-player-0002','POST',{reason:'Неверный второй сет'})).status,200);
+ assert.equal((await request(`/games/${id}/confirm`,'demo-player-0002','POST')).status,409);
+ assert.equal((await request(`/games/${id}/result`,'demo-player-0002','POST',{score:'6:4, 6:3'})).status,403);
+ assert.equal((await request(`/games/${id}/result`,'demo-player-0001','POST',{score:'6:4, 6:3'})).status,200);
  assert.equal((await request(`/games/${id}/confirm`,'demo-player-0001','POST')).status,409);
  const confirmed=await request(`/games/${id}/confirm`,'demo-player-0002','POST');assert.equal(confirmed.status,200);assert.equal(confirmed.data.game.resultConfirmed,true);
  const winner=(await request('/me','demo-player-0001')).data.user;const loser=(await request('/me','demo-player-0002')).data.user;assert.equal(winner.ntrpLevel,3.5);assert.equal(loser.ntrpLevel,3.5);assert.equal(winner.photoData,pixel);assert.equal(winner.tennis_rating,undefined);
+ assert.ok(winner.ratings.tennis.rating>1500&&loser.ratings.tennis.rating<1500);
+ assert.equal(winner.ratings.tennis.matches,1);assert.equal(winner.ratings.padel.matches,0);
+ assert.equal((await request('/ratings/history','demo-player-0001')).data.events.length,1);
+ const progress=await request('/progress','demo-player-0001');assert.equal(progress.status,200);assert.equal(progress.data.totalGames,1);assert.equal(progress.data.months.at(-1).games,1);assert.equal(progress.data.totalTrainings,0);assert.equal(progress.data.months.at(-1).rating,Math.round(winner.ratings.tennis.rating));assert.ok(progress.data.ratingDelta>0);
+ const notifications=await request('/notifications','demo-player-0002');assert.ok(notifications.data.unread>0);
+ assert.equal((await request('/notifications/read','demo-player-0002','POST')).status,200);
+ assert.equal((await request('/notifications','demo-player-0002')).data.unread,0);
  assert.equal((await request(`/games/${id}/confirm`,'demo-player-0002','POST')).status,409);
 });
 test('coach registration and avatar persist',async()=>{
@@ -82,6 +98,26 @@ test('coach publishes training and players reserve available places',async()=>{
  assert.equal((await request('/trainings','demo-coach-0004','POST',{...payload,sport:'padel',courtId:'padel360'})).status,403);
  assert.equal((await request(`/trainings/${id}/leave`,'demo-player-0002','POST')).status,200);
  assert.equal((await request(`/trainings/${id}/join`,'demo-player-0003','POST')).status,200);
+ assert.equal((await request(`/trainings/${id}/review`,'demo-player-0001','POST',{score:5,comment:'Отличная тренировка'})).status,403);
+ db.prepare('UPDATE trainings SET starts_at=? WHERE id=?').run(new Date(Date.now()-3*3600000).toISOString(),id);
+ assert.equal((await request(`/trainings/${id}/review`,'demo-player-0001','POST',{score:5,comment:'Отличная тренировка'})).status,403);
+ assert.equal((await request(`/trainings/${id}/complete`,'demo-player-0001','POST')).status,403);
+ assert.equal((await request(`/trainings/${id}/complete`,'demo-coach-0004','POST')).status,200);
+ assert.equal((await request(`/trainings/${id}/review`,'demo-coach-0004','POST',{score:5,comment:'Отличная тренировка'})).status,403);
+ assert.equal((await request(`/trainings/${id}/review`,'demo-player-0001','POST',{score:5,comment:'Отличная тренировка'})).status,200);
+ assert.equal((await request(`/trainings/${id}/review`,'demo-player-0001','POST',{score:1,comment:'Повторный отзыв'})).status,409);
+ assert.equal((await request('/users/demo-coach-0004','demo-player-0001')).data.user.reviews[0].score,5);
+});
+test('absence report stays unrated and can be contested',async()=>{
+ const startsAt=new Date(Date.now()+4*3600000).toISOString(),payload={sport:'padel',kind:'rating',seats:2,courtId:'padel360',startsAt,duration:60,levelMin:2.5,levelMax:4,price:800,note:'Тест неявки',opponentGender:'any'};
+ const g=(await request('/games','demo-player-0001','POST',payload)).data.game;
+ assert.equal((await request(`/games/${g.id}/join`,'demo-player-0002','POST')).status,200);
+ db.prepare('UPDATE games SET starts_at=? WHERE id=?').run(new Date(Date.now()-3*3600000).toISOString(),g.id);
+ assert.equal((await request(`/games/${g.id}/report-absence`,'demo-player-0001','POST',{reason:'Соперник не пришёл'})).status,200);
+ assert.equal((await request(`/games/${g.id}/attend`,'demo-player-0002','POST')).status,409);
+ assert.equal((await request(`/games/${g.id}/contest-absence`,'demo-player-0002','POST')).status,200);
+ assert.equal((await request(`/games/${g.id}/contest-absence`,'demo-player-0002','POST')).status,409);
+ assert.equal((await request('/me','demo-player-0001')).data.user.ratings.padel.matches,0);
 });
 test('authors edit and cancel listings; chats remain tied to their announcement',async()=>{
  const startsAt=new Date(Date.now()+5*86400000).toISOString();
@@ -128,6 +164,8 @@ test('weather endpoint caches hourly temperature and condition codes',async()=>{
 test('registered user directory and unread direct and listing conversations',async()=>{
  const users=await request('/users?q=Мария','demo-player-0001');
  assert.equal(users.status,200);assert.equal(users.data.users.length,1);assert.equal(users.data.users[0].role,'coach');
+ const coaches=await request('/users?role=coach','demo-player-0001');assert.equal(coaches.status,200);assert.ok(coaches.data.users.length>0&&coaches.data.users.every(u=>u.role==='coach'));
+ assert.equal((await request('/users?role=club','demo-player-0001')).status,400);
  assert.equal(users.data.users[0].phone,undefined);
  assert.equal((await request('/users?q=Роман','demo-player-0001')).data.users.some(u=>u.id==='demo-player-0001'),false);
  assert.equal((await request('/direct/demo-unknown-0001','demo-player-0001','POST',{message:'Привет'})).status,404);
@@ -164,5 +202,102 @@ test('only the booking owner can cancel a training request',async()=>{
  assert.equal((await request('/bookings','demo-player-0001')).data.bookings.some(b=>b.id===id),true);
  assert.equal((await request(`/bookings/${id}`,'demo-player-0001','DELETE')).status,200);
  assert.equal((await request('/bookings','demo-player-0001')).data.bookings.some(b=>b.id===id),false);
+});
+test('approval requests hold places only after organizer accepts, with rejection and trainer flow',async()=>{
+ const start=new Date(Date.now()+5*86400000).toISOString();
+ assert.equal((await request('/profile','demo-player-0005','POST',{...registration('Лена','female'),ntrpLevel:1,city:'Волгоград'})).status,200);
+ const gamePayload={sport:'tennis',kind:'rating',seats:2,courtId:'dinamo',startsAt:start,duration:60,levelMin:1,levelMax:4,price:1200,note:'',opponentGender:'female',requiresApproval:true};
+ const created=await request('/games','demo-player-0001','POST',gamePayload);
+ assert.equal(created.status,201);const id=created.data.game.id;
+ assert.equal(created.data.game.requiresApproval,true);
+ assert.equal((await request(`/games/${id}/join`,'demo-player-0003','POST')).status,403);
+ const pending=await request(`/games/${id}/join`,'demo-player-0002','POST');
+ assert.equal(pending.status,200);assert.equal(pending.data.game.joined,false);
+ assert.equal(pending.data.game.requestStatus,'pending');assert.equal(pending.data.game.members.length,1);
+ assert.equal(pending.data.game.requests.length,0);
+ assert.equal((await request(`/games/${id}/join`,'demo-player-0002','POST')).status,409);
+ assert.equal((await request(`/games/${id}`,'demo-player-0001')).data.game.requests.length,1);
+ assert.equal((await request(`/games/${id}/requests/demo-player-0002/approve`,'demo-player-0005','POST')).status,403);
+ assert.equal((await request(`/games/${id}/join`,'demo-player-0005','POST')).data.game.requestStatus,'pending');
+ const accepted=await request(`/games/${id}/requests/demo-player-0002/approve`,'demo-player-0001','POST');
+ assert.equal(accepted.status,200);assert.equal(accepted.data.game.members.length,2);
+ assert.equal((await request(`/games/${id}`,'demo-player-0002')).data.game.joined,true);
+ assert.equal((await request(`/games/${id}/requests/demo-player-0005/approve`,'demo-player-0001','POST')).status,409);
+ assert.equal((await request(`/games/${id}/requests/demo-player-0005/reject`,'demo-player-0001','POST')).status,200);
+ assert.equal((await request(`/games/${id}`,'demo-player-0005')).data.game.requestStatus,'rejected');
+ assert.equal((await request(`/games/${id}/requests/demo-player-0005/reject`,'demo-player-0001','POST')).status,409);
+ const leaderboard=await request('/leaderboard?sport=tennis','demo-player-0001');
+ assert.equal(leaderboard.status,200);assert.ok(leaderboard.data.players.every(p=>p.matches>0));
+ assert.equal((await request('/leaderboard?sport=bad','demo-player-0001')).status,400);
+ const trainingPayload={sport:'tennis',format:'split',seats:2,courtId:'dinamo',startsAt:start,duration:60,ntrpMin:null,ntrpMax:null,price:2500,note:'',requiresApproval:true};
+ const training=(await request('/trainings','demo-coach-0004','POST',trainingPayload)).data.training;
+ assert.equal((await request(`/trainings/${training.id}/join`,'demo-player-0005','POST')).data.training.requestStatus,'pending');
+ assert.equal((await request(`/trainings/${training.id}`,'demo-coach-0004','PATCH',{...trainingPayload,price:2300})).data.training.requests.length,1);
+ assert.equal((await request(`/trainings/${training.id}/requests/demo-player-0005/reject`,'demo-coach-0004','POST')).status,200);
+ assert.equal((await request('/trainings','demo-player-0005')).data.trainings.find(t=>t.id===training.id).members.length,0);
+ assert.equal((await request(`/trainings/${training.id}/join`,'demo-player-0005','POST')).data.training.requestStatus,'pending');
+ const approved=await request(`/trainings/${training.id}/requests/demo-player-0005/approve`,'demo-coach-0004','POST');
+ assert.equal(approved.status,200);assert.equal(approved.data.training.members.length,1);
+ assert.equal((await request('/trainings','demo-player-0005')).data.trainings.find(t=>t.id===training.id).joined,true);
+});
+test('club registration, administrator approval and private booking calendar',async()=>{
+ process.env.ADMIN_DEMO_USER_ID='demo-player-0001';
+ const clubId='demo-club-0007',club={role:'club',name:'Наталья',clubName:'Теннис Парк',clubAddress:'ул. Тестовая, 12',city:'Ростов-на-Дону',clubPhone:'+7 900 123-45-67',clubSports:['tennis','padel'],clubPhotoData:coachPhoto,clubSurface:'hard',opensAt:'08:00',closesAt:'22:00',hourlyPrice:1500};
+ try{
+   assert.equal((await request('/profile',clubId,'POST',{...club,clubPhotoData:null})).status,400);
+   const saved=await request('/profile',clubId,'POST',club);assert.equal(saved.status,200);assert.equal(saved.data.user.club.status,'pending');
+   assert.equal(saved.data.user.club.photoData,coachPhoto);assert.equal(saved.data.user.club.hourlyPrice,1500);
+   assert.equal((await request('/games',clubId)).status,403);
+   assert.equal((await request('/catalog','demo-player-0001')).data.courts.some(c=>c.clubId===clubId),false);
+   assert.equal((await request('/admin/clubs','demo-player-0002')).status,403);
+   const review=(await request('/admin/clubs','demo-player-0001')).data.clubs.find(c=>c.ownerId===clubId);
+   assert.equal(review.photoData,coachPhoto);assert.equal(review.surface,'hard');assert.equal(review.hourlyPrice,1500);
+   assert.equal((await request(`/admin/clubs/${clubId}/approve`,'demo-player-0001','POST')).status,200);
+   assert.equal((await request(`/admin/clubs/${clubId}/approve`,'demo-player-0001','POST')).status,409);
+   const courts=(await request('/catalog','demo-player-0001')).data.courts;
+   assert.ok(courts.some(c=>c.clubId===clubId&&c.sport==='tennis'&&c.city==='Ростов-на-Дону'&&c.image===coachPhoto&&c.surface==='hard'&&c.opensAt==='08:00'&&c.closesAt==='22:00'&&c.hourlyPrice===1500));
+   const startsAt=new Date(Date.now()+7*86400000);startsAt.setUTCHours(15,0,0,0);
+   const payload={clubId,sport:'tennis',startsAt:startsAt.toISOString(),duration:90};
+   assert.equal((await request('/court-bookings','demo-player-0002','POST',{...payload,startsAt:new Date(startsAt.getTime()-14*3600000).toISOString()})).status,409);
+   assert.equal((await request('/court-bookings','demo-player-0002','POST',payload)).status,201);
+   assert.equal((await request('/court-bookings','demo-player-0005','POST',{...payload,startsAt:new Date(startsAt.getTime()+3600000).toISOString()})).status,409);
+   const date=new Intl.DateTimeFormat('en-CA',{timeZone:'Europe/Moscow',year:'numeric',month:'2-digit',day:'2-digit'}).format(startsAt);
+   const calendar=await request('/club/calendar?date='+date,clubId);assert.equal(calendar.status,200);assert.equal(calendar.data.reservations.length,1);assert.equal(calendar.data.reservations[0].guestName,'Вика');
+   assert.equal((await request('/club/calendar?date='+date,'demo-player-0001')).status,403);
+   const reservation=(await request('/court-bookings','demo-player-0002')).data.bookings.at(-1);
+   assert.equal((await request(`/court-bookings/${reservation.id}`,'demo-player-0005','DELETE')).status,404);
+   assert.equal((await request(`/court-bookings/${reservation.id}`,'demo-player-0002','DELETE')).status,200);
+   assert.equal((await request('/club/calendar?date='+date,clubId)).data.reservations.length,0);
+ }finally{delete process.env.ADMIN_DEMO_USER_ID;}
+});
+test('doubles rating requires all four to confirm attendance and score',async()=>{
+ const fourth='demo-player-0006';assert.equal((await request('/profile',fourth,'POST',registration('Саша','male'))).status,200);
+ const startsAt=new Date(Date.now()+4*86400000).toISOString();
+ const created=await request('/games','demo-player-0001','POST',{sport:'tennis',kind:'rating',seats:4,courtId:'dinamo',startsAt,duration:60,levelMin:1,levelMax:7,price:800,note:'',opponentGender:'any'});
+ assert.equal(created.status,201);const id=created.data.game.id;
+ for(const user of ['demo-player-0002','demo-player-0005',fourth])assert.equal((await request(`/games/${id}/join`,user,'POST')).status,200);
+ const teams=(await request(`/games/${id}`,'demo-player-0001')).data.game.members;
+ assert.deepEqual(teams.map(m=>m.team),['A','B','A','B']);
+ db.prepare('UPDATE games SET starts_at=? WHERE id=?').run(new Date(Date.now()-3*3600000).toISOString(),id);
+ assert.equal((await request(`/games/${id}/result`,'demo-player-0001','POST',{score:'6:4, 6:3'})).status,409);
+ for(const [i,user] of ['demo-player-0001','demo-player-0002','demo-player-0005',fourth].entries()){
+   const confirmed=await request(`/games/${id}/attend`,user,'POST');assert.equal(confirmed.status,200);assert.equal(confirmed.data.game.attendanceCount,i+1);
+ }
+ assert.equal((await request(`/games/${id}/result`,'demo-player-0002','POST',{score:'6:4, 6:3'})).status,403);
+ assert.equal((await request(`/games/${id}/result`,'demo-player-0001','POST',{score:'6:4, 6:3'})).status,200);
+ for(const [i,user] of ['demo-player-0002','demo-player-0005',fourth].entries()){
+   const confirmed=await request(`/games/${id}/confirm`,user,'POST');assert.equal(confirmed.status,200);assert.equal(confirmed.data.game.resultConfirmed,i===2);
+ }
+ for(const user of ['demo-player-0001','demo-player-0002','demo-player-0005',fourth])assert.ok((await request('/me',user)).data.user.ratings.tennis.matches>=1);
+});
+test('monthly event counts confirmed rating matches and shows real leaders',async()=>{
+ const event=await request('/events/marathon','demo-player-0001');
+ assert.equal(event.status,200);assert.equal(event.data.goal,20);assert.match(event.data.month,/^\d{4}-\d{2}$/);
+ assert.equal(event.data.earned,event.data.games>=20);
+ assert.ok(event.data.games>=0);assert.ok(event.data.leaders.length<=3);
+ for(const leader of event.data.leaders)assert.ok(leader.games>0);
+ const confirmedThisMonth=db.prepare("SELECT COUNT(*) AS n FROM participants p JOIN games g ON g.id=p.game_id WHERE p.user_id=? AND g.kind='rating' AND g.result_confirmed=1 AND g.starts_at>=? AND g.starts_at<?");
+ const [year,month]=event.data.month.split('-').map(Number),start=new Date(`${year}-${String(month).padStart(2,'0')}-01T00:00:00+03:00`),next=new Date(`${month===12?year+1:year}-${String(month===12?1:month+1).padStart(2,'0')}-01T00:00:00+03:00`);
+ assert.equal(event.data.games,confirmedThisMonth.get('demo-player-0001',start.toISOString(),next.toISOString()).n);
 });
 test.after(async()=>{await new Promise(resolve=>server.close(resolve));db.close();fs.rmSync(dir,{recursive:true,force:true});});

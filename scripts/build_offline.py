@@ -3,13 +3,13 @@ import base64,json
 root=Path(__file__).resolve().parents[1]
 css=(root/'public/style.css').read_text()
 js=(root/'public/app.js').read_text()
-for name,mime in [('hero_court.png','image/png'),('coach.jpg','image/jpeg'),('dinamo.png','image/png'),('svetlaya.png','image/png'),('tennis-go-approved-logo.png','image/png'),('tennis-avatars-v2.png','image/png'),('court_generic.svg','image/svg+xml')]:
+for name,mime in [('hero_court.png','image/png'),('coach.jpg','image/jpeg'),('dinamo.png','image/png'),('svetlaya.png','image/png'),('tennis-go-approved-logo.png','image/png'),('tennis-avatars-v2.png','image/png'),('court_generic.svg','image/svg+xml'),('sparring-rhino-bunny-court-white-pink.png','image/png'),('tennis-go-marathon-court.png','image/png')]:
     uri='data:'+mime+';base64,'+base64.b64encode((root/'public/assets'/name).read_bytes()).decode()
     js=js.replace('/assets/'+name,uri)
     css=css.replace('/assets/'+name,uri)
 start=js.index('async function api(')
 end=js.index('function toast(',start)
-stub=r'''const offlineKey='tennis-go-offline-v014';
+stub=r'''const offlineKey='tennis-go-offline-v020';
 const uid=()=>globalThis.crypto?.randomUUID?.()||('offline-'+Math.random().toString(36).slice(2));
 let offline;try{offline=JSON.parse(localStorage.getItem(offlineKey)||'null');}catch{}
 if(!offline){
@@ -21,21 +21,34 @@ if(!offline){
 }
 offline.trainings ||= [];
 offline.chats ||= [];
-offline.direct ||= [];
+offline.direct ||= [];offline.notifications ||= [];offline.clubBookings ||= [];
+const shapeListing=(x,owner)=>{x.requiresApproval ||= false;x.requestStatus ||= null;x.requests ||= [];x.joined=x.members.some(m=>m.id===demoId);if(owner===demoId)x.requestStatus=null;};
+offline.games.forEach(g=>shapeListing(g,g.creatorId));offline.trainings.forEach(t=>shapeListing(t,t.coachId));
 offline.me.city ||= 'Краснодар';
 if(offline.me.role==='coach'&&!offline.me.coachSports)offline.me.coachSports=['tennis','padel'];
 if(offline.me.registrationVersion!==2)offline.me.registered=false;
 for(const t of offline.trainings){t.sport ||= 'tennis';if(t.coachGender===undefined)t.coachGender=t.coachId===demoId?offline.me.gender:'female';if(t.ntrpMin===undefined)t.ntrpMin=t.avgNtrp??null;if(t.ntrpMax===undefined)t.ntrpMax=t.avgNtrp??null;}
 const persist=()=>{try{localStorage.setItem(offlineKey,JSON.stringify(offline));}catch{}};
 async function api(route,method='GET',payload){
- if(route==='/config')return {demo:true,botUsername:'',cities:CITIES_JSON,version:'0.14.0'};
+ if(route==='/config')return {demo:true,botUsername:'',cities:CITIES_JSON,version:'0.20.1'};
  if(route==='/me')return {user:offline.me};
+ if(route==='/profile'&&method==='POST'&&payload.role==='club'){offline.me={...offline.me,name:payload.name,role:'club',city:payload.city,registered:true,registrationVersion:2,club:{name:payload.clubName,address:payload.clubAddress,city:payload.city,phone:payload.clubPhone,sports:payload.clubSports,photoData:payload.clubPhotoData,surface:payload.clubSurface,opensAt:payload.opensAt,closesAt:payload.closesAt,hourlyPrice:payload.hourlyPrice,status:'pending'}};persist();return {user:offline.me};}
  if(route==='/profile'&&method==='POST'){if(payload.city&&!CITIES_JSON.includes(payload.city))throw Error('Выберите город из списка');if(payload.role==='coach'&&payload.coachSports!==undefined&&!payload.coachSports.length)throw Error('Выберите теннис, падел или оба вида спорта');offline.me={...offline.me,...payload,city:payload.city||'Краснодар',coachSports:payload.role==='coach'?(payload.coachSports||['tennis','padel']):[],registered:true,registrationVersion:2};for(const g of offline.games){for(const member of g.members)if(member.id===demoId){member.name=payload.name;member.avatarId=payload.avatarId;member.photoData=payload.photoData;}if(g.creatorId===demoId){g.creatorNtrp=payload.ntrpLevel;g.creatorRole=payload.role;}}for(const t of offline.trainings){for(const member of t.members)if(member.id===demoId){member.name=payload.name;member.avatarId=payload.avatarId;member.photoData=payload.photoData;}if(t.coachId===demoId){t.coachName=payload.name;t.coachGender=payload.gender;t.coachYears=payload.coachYears;t.coachAvatarId=payload.avatarId;t.coachPhotoData=payload.photoData;}}persist();return {user:offline.me};}
+ if(route.startsWith('/club/calendar'))return {date:route.split('=')[1],status:offline.me.club?.status||'pending',reservations:[]};
+ if(route==='/court-bookings'&&method==='GET')return {bookings:offline.clubBookings};
+ if(route==='/court-bookings'&&method==='POST')throw Error('В офлайн-демо пока нет подтверждённых клубов');
+ if(route.startsWith('/admin/clubs'))return {clubs:[]};
  if(!offline.me.registered)throw Error('Завершите регистрацию');
- if(route.startsWith('/users?')&&method==='GET'){const params=new URLSearchParams(route.slice(route.indexOf('?')+1)),q=(params.get('q')||'').toLowerCase(),offset=Number(params.get('offset')||0),users=[{id:'demo-host',name:'Алексей',role:'player',city:'Краснодар',avatarId:'male-cap',photoData:null,ntrpLevel:3,coachSports:[]},{id:'demo-coach',name:'Анастасия',role:'coach',city:'Краснодар',avatarId:'female-cap',photoData:null,ntrpLevel:null,coachSports:['tennis']}].filter(u=>u.name.toLowerCase().includes(q));return {users:users.slice(offset,offset+30),hasMore:users.length>offset+30};}
+ if(route==='/notifications')return {items:offline.notifications,unread:offline.notifications.filter(n=>!n.readAt).length};
+ if(route==='/notifications/read'&&method==='POST'){offline.notifications.forEach(n=>n.readAt=new Date().toISOString());persist();return {ok:true};}
+ if(route==='/ratings/history')return {events:[]};
+ if(route.startsWith('/leaderboard'))return {sport:new URLSearchParams(route.split('?')[1]||'').get('sport')||'tennis',players:[]};
+ if(route==='/progress')return {months:[],totalGames:0,totalTrainings:0,ratingDelta:null};
+ if(route==='/events/marathon'){const month=new Intl.DateTimeFormat('ru-RU',{month:'long',year:'numeric',timeZone:'Europe/Moscow'}).format(new Date());return {title:'Игровой марафон · '+month,month,goal:20,games:0,leaders:[],earned:false};}
+ if(route.startsWith('/users?')&&method==='GET'){const params=new URLSearchParams(route.slice(route.indexOf('?')+1)),q=(params.get('q')||'').toLowerCase(),offset=Number(params.get('offset')||0),role=params.get('role'),users=[{id:'demo-host',name:'Алексей',role:'player',city:'Краснодар',avatarId:'male-cap',photoData:null,ntrpLevel:3,coachSports:[]},{id:'demo-coach',name:'Анастасия',role:'coach',city:'Краснодар',avatarId:'female-cap',photoData:null,ntrpLevel:null,coachSports:['tennis']}].filter(u=>u.name.toLowerCase().includes(q)&&(!role||u.role===role));return {users:users.slice(offset,offset+30),hasMore:users.length>offset+30};}
  if(route.startsWith('/users/')&&method==='GET'){const id=decodeURIComponent(route.slice(7));if(id===demoId)return {user:offline.me};if(id==='demo-coach')return {user:{id,name:'Анастасия',role:'coach',gender:'female',playingYears:12,coachYears:7,ntrpLevel:null,about:'Тренирую игроков разного уровня.',avatarId:'female-cap',photoData:null,city:'Краснодар',phone:null,telegramContact:null,coachSports:['tennis']}};if(id==='demo-host')return {user:{id,name:'Алексей',role:'player',gender:'male',playingYears:4,coachYears:null,ntrpLevel:3,about:'Ищу партнёров для игры.',avatarId:'male-cap',photoData:null,city:'Краснодар',phone:null,telegramContact:null,coachSports:[]}};throw Error('Профиль не найден');}
  if(route==='/catalog')return {coaches:[{id:'anastasia',name:'Анастасия',sport:'Теннис',description:'Индивидуальная тренировка · любой уровень',price:2500,image:'COACH_IMAGE'}],courts:COURTS_JSON};
- if(route==='/weather')return {hours:[],status:'unavailable',source:'Open-Meteo'};
+ if(route.startsWith('/weather'))return {hours:[],status:'unavailable',source:'Open-Meteo'};
  if(route==='/inbox'){const threads=[];for(const m of offline.direct){let t=threads.find(t=>t.key==='direct:'+m.peerId);if(!t){t={key:'direct:'+m.peerId,kind:'direct',listingId:null,peerId:m.peerId,peerName:m.peerId==='demo-host'?'Алексей':'Анастасия',title:'Личный чат',peerAvatarId:m.peerId==='demo-host'?'male-cap':'female-cap',peerPhotoData:null,unread:0};threads.push(t);}t.lastMessage=m.body;t.lastAt=m.createdAt;if(m.senderId!==demoId&&!m.readAt)t.unread++;}for(const m of offline.chats){const key=m.kind+':'+m.id+':'+m.peerId;let t=threads.find(t=>t.key===key);if(!t){t={key,kind:m.kind,listingId:m.id,peerId:m.peerId,peerName:m.peerId==='demo-host'?'Алексей':'Анастасия',title:m.kind==='game'?'Игра':'Тренировка',peerAvatarId:null,peerPhotoData:null,unread:0};threads.push(t);}t.lastMessage=m.body;t.lastAt=m.createdAt;if(m.senderId!==demoId&&!m.readAt)t.unread++;}threads.sort((a,b)=>b.lastAt.localeCompare(a.lastAt));return {threads,unread:threads.reduce((n,t)=>n+t.unread,0)};}
  const directRoute=route.match(/^\/direct\/([^/]+)$/);
  if(directRoute){const peerId=directRoute[1];if(!['demo-host','demo-coach'].includes(peerId))throw Error('Пользователь не найден');if(method==='POST'){const message=String(payload.message||'').trim().slice(0,500);if(!message)throw Error('Напишите сообщение');offline.direct.push({peerId,senderId:demoId,body:message,createdAt:new Date().toISOString()});persist();}return {peer:{id:peerId,name:peerId==='demo-host'?'Алексей':'Анастасия'},messages:offline.direct.filter(m=>m.peerId===peerId)};}
@@ -48,12 +61,16 @@ async function api(route,method='GET',payload){
   if(!offline.me.coachSports.includes(payload.sport))throw Error('Добавьте этот вид спорта в профиль тренера');
   const court=(await api('/catalog')).courts.find(c=>c.id===payload.courtId&&c.sport===payload.sport);if(!court)throw Error('Выберите корт для выбранного вида спорта');
   if((payload.ntrpMin===null)!==(payload.ntrpMax===null)||payload.ntrpMin!==null&&payload.ntrpMin>payload.ntrpMax)throw Error('Проверьте диапазон NTRP');
-  const t={id:uid(),sport:payload.sport,coachId:demoId,coachName:offline.me.name,coachGender:offline.me.gender,coachYears:offline.me.coachYears,coachAvatarId:offline.me.avatarId,coachPhotoData:offline.me.photoData,format:payload.format,seats:payload.seats,courtId:court.id,courtName:court.name,courtAddress:court.address,startsAt:payload.startsAt,duration:payload.duration,ntrpMin:payload.ntrpMin,ntrpMax:payload.ntrpMax,price:payload.price,note:payload.note,members:[],joined:false};offline.trainings.push(t);persist();return {training:t};
+  const t={id:uid(),sport:payload.sport,coachId:demoId,coachName:offline.me.name,coachGender:offline.me.gender,coachYears:offline.me.coachYears,coachAvatarId:offline.me.avatarId,coachPhotoData:offline.me.photoData,format:payload.format,seats:payload.seats,courtId:court.id,courtName:court.name,courtAddress:court.address,startsAt:payload.startsAt,duration:payload.duration,ntrpMin:payload.ntrpMin,ntrpMax:payload.ntrpMax,price:payload.price,note:payload.note,requiresApproval:!!payload.requiresApproval,requestStatus:null,requests:[],members:[],joined:false};offline.trainings.push(t);persist();return {training:t};
  }
  const trainingEdit=route.match(/^\/trainings\/([^/]+)$/);
- if(trainingEdit&&['PATCH','DELETE'].includes(method)){const t=offline.trainings.find(x=>x.id===trainingEdit[1]);if(!t||t.coachId!==demoId||t.cancelled)throw Error('Тренировка недоступна');if(method==='DELETE')t.cancelled=true;else{const court=COURTS_JSON.find(c=>c.id===payload.courtId&&c.sport===payload.sport);if(!court||payload.seats<t.members.length)throw Error('Проверьте корт и места');Object.assign(t,payload,{courtName:court.name,courtAddress:court.address});}persist();return {training:t};}
+ if(trainingEdit&&['PATCH','DELETE'].includes(method)){const t=offline.trainings.find(x=>x.id===trainingEdit[1]);if(!t||t.coachId!==demoId||t.cancelled)throw Error('Тренировка недоступна');if(method==='DELETE'){t.cancelled=true;t.requests=[];}else{const court=COURTS_JSON.find(c=>c.id===payload.courtId&&c.sport===payload.sport);if(!court||payload.seats<t.members.length)throw Error('Проверьте корт и места');Object.assign(t,payload,{courtName:court.name,courtAddress:court.address,requiresApproval:!!payload.requiresApproval});if(!t.requiresApproval)t.requests=[];}persist();return {training:t};}
+ const trainingRequest=route.match(/^\/trainings\/([^/]+)\/requests\/([^/]+)\/(approve|reject)$/);
+ if(trainingRequest&&method==='POST'){const t=offline.trainings.find(x=>x.id===trainingRequest[1]);if(!t||t.coachId!==demoId)throw Error('Недоступно');const index=t.requests.findIndex(u=>u.id===trainingRequest[2]);if(index<0)throw Error('Заявка не найдена');if(trainingRequest[3]==='approve'){if(t.members.length>=t.seats)throw Error('Мест нет');t.members.push(t.requests[index]);}t.requests.splice(index,1);persist();return {training:t};}
+ if(/^\/trainings\/[^/]+\/review$/.test(route)&&method==='POST')return {ok:true};
+ const completed=route.match(/^\/trainings\/([^/]+)\/complete$/);if(completed&&method==='POST'){const t=offline.trainings.find(x=>x.id===completed[1]);if(!t||t.coachId!==demoId)throw Error('Недоступно');t.completed=true;persist();return {training:t};}
  const trainingMatch=route.match(/^\/trainings\/([^/]+)\/(join|leave)$/);
- if(trainingMatch&&method==='POST'){const t=offline.trainings.find(x=>x.id===trainingMatch[1]);if(!t)throw Error('Тренировка не найдена');if(t.coachId===demoId)throw Error('Это ваша тренировка');if(trainingMatch[2]==='join'){if(t.members.length>=t.seats)throw Error('Мест нет');t.members.push({id:demoId,name:offline.me.name,avatarId:offline.me.avatarId,photoData:offline.me.photoData});t.joined=true;}else{t.members=t.members.filter(m=>m.id!==demoId);t.joined=false;}persist();return {training:t};}
+ if(trainingMatch&&method==='POST'){const t=offline.trainings.find(x=>x.id===trainingMatch[1]);if(!t)throw Error('Тренировка не найдена');if(t.coachId===demoId)throw Error('Это ваша тренировка');if(trainingMatch[2]==='join'){if(t.joined||t.requestStatus==='pending'||t.members.length>=t.seats)throw Error('Мест нет');if(t.requiresApproval){t.requestStatus='pending';t.requests.push({id:demoId,name:offline.me.name,avatarId:offline.me.avatarId,photoData:offline.me.photoData});}else{t.members.push({id:demoId,name:offline.me.name,avatarId:offline.me.avatarId,photoData:offline.me.photoData});t.joined=true;}}else{t.members=t.members.filter(m=>m.id!==demoId);t.requests=t.requests.filter(m=>m.id!==demoId);t.joined=false;t.requestStatus=null;}persist();return {training:t};}
  if(route==='/bookings'&&method==='GET')return {bookings:offline.bookings};
  if(route==='/bookings'&&method==='POST'){
   const catalog=await api('/catalog');const coach=catalog.coaches.find(c=>c.id===payload.coachId),court=catalog.courts.find(c=>c.id===payload.courtId);
@@ -67,19 +84,26 @@ async function api(route,method='GET',payload){
  if(route==='/games'&&method==='GET')return {games:offline.games};
  if(route==='/games'&&method==='POST'){
   if(payload.levelMin>payload.levelMax)throw Error('Проверьте диапазон уровня');
-  if(payload.kind==='rating'&&payload.seats!==2)throw Error('Рейтинг доступен для игры 1 на 1');
+  
   const court=(await api('/catalog')).courts.find(c=>c.id===payload.courtId&&c.sport===payload.sport);if(!court)throw Error('Выберите корт для этого вида спорта');
-  const g={id:uid(),sport:payload.sport,city:payload.city,venue:court.name,courtId:court.id,courtAddress:court.address,startsAt:payload.startsAt,duration:payload.duration,levelMin:payload.levelMin,levelMax:payload.levelMax,seats:payload.seats,price:payload.price,kind:payload.kind,note:payload.note,creatorId:demoId,creatorGender:offline.me.gender,creatorNtrp:offline.me.ntrpLevel,creatorRole:offline.me.role,opponentGender:payload.opponentGender,members:[{id:demoId,name:offline.me.name,avatarId:offline.me.avatarId,photoData:offline.me.photoData}],joined:true,result:null,resultBy:null,resultConfirmed:false};
+  const g={id:uid(),sport:payload.sport,city:payload.city,venue:court.name,courtId:court.id,courtAddress:court.address,startsAt:payload.startsAt,duration:payload.duration,levelMin:payload.levelMin,levelMax:payload.levelMax,seats:payload.seats,price:payload.price,kind:payload.kind,note:payload.note,creatorId:demoId,creatorGender:offline.me.gender,creatorNtrp:offline.me.ntrpLevel,creatorRole:offline.me.role,opponentGender:payload.opponentGender,requiresApproval:!!payload.requiresApproval,requestStatus:null,requests:[],members:[{id:demoId,name:offline.me.name,avatarId:offline.me.avatarId,photoData:offline.me.photoData}],joined:true,result:null,resultBy:null,resultConfirmed:false};
   offline.games.push(g);persist();return {game:g};
  }
  const gameEdit=route.match(/^\/games\/([^/]+)$/);
- if(gameEdit&&['PATCH','DELETE'].includes(method)){const g=offline.games.find(x=>x.id===gameEdit[1]);if(!g||g.creatorId!==demoId||g.cancelled)throw Error('Игра недоступна');if(method==='DELETE')g.cancelled=true;else{const court=COURTS_JSON.find(c=>c.id===payload.courtId&&c.sport===payload.sport);if(!court||payload.seats<g.members.length)throw Error('Проверьте корт и места');Object.assign(g,payload,{venue:court.name,courtAddress:court.address});}persist();return {game:g};}
- const match=route.match(/^\/games\/([^/]+)(?:\/(join|leave|result|confirm))?$/);
+ if(gameEdit&&['PATCH','DELETE'].includes(method)){const g=offline.games.find(x=>x.id===gameEdit[1]);if(!g||g.creatorId!==demoId||g.cancelled)throw Error('Игра недоступна');if(method==='DELETE'){g.cancelled=true;g.requests=[];}else{const court=COURTS_JSON.find(c=>c.id===payload.courtId&&c.sport===payload.sport);if(!court||payload.seats<g.members.length)throw Error('Проверьте корт и места');Object.assign(g,payload,{venue:court.name,courtAddress:court.address,requiresApproval:!!payload.requiresApproval});if(!g.requiresApproval)g.requests=[];}persist();return {game:g};}
+ const gameRequest=route.match(/^\/games\/([^/]+)\/requests\/([^/]+)\/(approve|reject)$/);
+ if(gameRequest&&method==='POST'){const g=offline.games.find(x=>x.id===gameRequest[1]);if(!g||g.creatorId!==demoId)throw Error('Недоступно');const index=g.requests.findIndex(u=>u.id===gameRequest[2]);if(index<0)throw Error('Заявка не найдена');if(gameRequest[3]==='approve'){if(g.members.length>=g.seats)throw Error('Мест нет');g.members.push(g.requests[index]);}g.requests.splice(index,1);persist();return {game:g};}
+ const match=route.match(/^\/games\/([^/]+)(?:\/(join|leave|attend|confirm-attendance|report-absence|contest-absence|result|confirm|dispute))?$/);
  if(match){const g=offline.games.find(x=>x.id===match[1]);if(!g)throw Error('Игра не найдена');
   if(method==='GET')return {game:g};
-  if(match[2]==='join'){if(g.joined||g.members.length>=g.seats)throw Error('Свободных мест нет');if(g.opponentGender!=='any'&&g.opponentGender!==offline.me.gender)throw Error('Создатель игры указал другой пол участников');g.members.push({id:demoId,name:offline.me.name,avatarId:offline.me.avatarId,photoData:offline.me.photoData});g.joined=true;}
-  if(match[2]==='leave'){g.members=g.members.filter(m=>m.id!==demoId);g.joined=false;}
-  if(match[2]==='result'){g.result=payload.score;g.resultBy=demoId;}
+  if(match[2]==='join'){if(g.joined||g.requestStatus==='pending'||g.members.length>=g.seats)throw Error('Свободных мест нет');if(g.opponentGender!=='any'&&g.opponentGender!==offline.me.gender)throw Error('Создатель игры указал другой пол участников');if(g.requiresApproval){g.requestStatus='pending';g.requests.push({id:demoId,name:offline.me.name,avatarId:offline.me.avatarId,photoData:offline.me.photoData});}else{g.members.push({id:demoId,name:offline.me.name,avatarId:offline.me.avatarId,photoData:offline.me.photoData});g.joined=true;}}
+  if(match[2]==='leave'){g.members=g.members.filter(m=>m.id!==demoId);g.requests=g.requests.filter(m=>m.id!==demoId);g.joined=false;g.requestStatus=null;}
+  if(match[2]==='result'){g.result=payload.score;g.resultBy=demoId;g.resultDisputed=false;}
+  if(match[2]==='attend')g.attendanceBy=demoId;
+  if(match[2]==='confirm-attendance')g.attendanceConfirmed=true;
+  if(match[2]==='dispute'){g.resultDisputed=true;g.resultDisputeReason=payload.reason;}
+  if(match[2]==='report-absence'){g.absenceBy=demoId;g.absenceReason=payload.reason;}
+  if(match[2]==='contest-absence')g.absenceDisputed=true;
   if(match[2]==='confirm')throw Error('Для подтверждения нужен второй игрок в серверной версии');
   persist();return {game:g,user:offline.me};
  }
