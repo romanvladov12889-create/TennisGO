@@ -21,7 +21,7 @@ if(!offline){
 }
 offline.trainings ||= [];
 offline.chats ||= [];
-offline.direct ||= [];offline.notifications ||= [];offline.clubBookings ||= [];
+offline.direct ||= [];offline.notifications ||= [];offline.clubBookings ||= [];offline.news ||= [];
 const shapeListing=(x,owner)=>{x.requiresApproval ||= false;x.requestStatus ||= null;x.requests ||= [];x.joined=x.members.some(m=>m.id===demoId);if(owner===demoId)x.requestStatus=null;};
 offline.games.forEach(g=>shapeListing(g,g.creatorId));offline.trainings.forEach(t=>shapeListing(t,t.coachId));
 offline.me.city ||= 'Краснодар';
@@ -30,7 +30,7 @@ if(offline.me.registrationVersion!==2)offline.me.registered=false;
 for(const t of offline.trainings){t.sport ||= 'tennis';if(t.coachGender===undefined)t.coachGender=t.coachId===demoId?offline.me.gender:'female';if(t.ntrpMin===undefined)t.ntrpMin=t.avgNtrp??null;if(t.ntrpMax===undefined)t.ntrpMax=t.avgNtrp??null;}
 const persist=()=>{try{localStorage.setItem(offlineKey,JSON.stringify(offline));}catch{}};
 async function api(route,method='GET',payload){
- if(route==='/config')return {demo:true,botUsername:'',cities:CITIES_JSON,version:'0.20.2'};
+ if(route==='/config')return {demo:true,botUsername:'',cities:CITIES_JSON,version:'0.20.4'};
  if(route==='/me')return {user:offline.me};
  if(route==='/profile'&&method==='POST'&&payload.role==='club'){offline.me={...offline.me,name:payload.name,role:'club',city:payload.city,registered:true,registrationVersion:2,club:{name:payload.clubName,address:payload.clubAddress,city:payload.city,phone:payload.clubPhone,sports:payload.clubSports,photoData:payload.clubPhotoData,surface:payload.clubSurface,opensAt:payload.opensAt,closesAt:payload.closesAt,hourlyPrice:payload.hourlyPrice,status:'pending'}};persist();return {user:offline.me};}
  if(route==='/profile'&&method==='POST'){if(payload.city&&!CITIES_JSON.includes(payload.city))throw Error('Выберите город из списка');if(payload.role==='coach'&&payload.coachSports!==undefined&&!payload.coachSports.length)throw Error('Выберите теннис, падел или оба вида спорта');offline.me={...offline.me,...payload,city:payload.city||'Краснодар',coachSports:payload.role==='coach'?(payload.coachSports||['tennis','padel']):[],registered:true,registrationVersion:2};for(const g of offline.games){for(const member of g.members)if(member.id===demoId){member.name=payload.name;member.avatarId=payload.avatarId;member.photoData=payload.photoData;}if(g.creatorId===demoId){g.creatorNtrp=payload.ntrpLevel;g.creatorRole=payload.role;}}for(const t of offline.trainings){for(const member of t.members)if(member.id===demoId){member.name=payload.name;member.avatarId=payload.avatarId;member.photoData=payload.photoData;}if(t.coachId===demoId){t.coachName=payload.name;t.coachGender=payload.gender;t.coachYears=payload.coachYears;t.coachAvatarId=payload.avatarId;t.coachPhotoData=payload.photoData;}}persist();return {user:offline.me};}
@@ -40,6 +40,8 @@ async function api(route,method='GET',payload){
  if(route.startsWith('/admin/clubs'))return {clubs:[]};
  if(!offline.me.registered)throw Error('Завершите регистрацию');
  if(route==='/notifications')return {items:offline.notifications,unread:offline.notifications.filter(n=>!n.readAt).length};
+ if(route==='/news'&&method==='GET')return {items:offline.news};
+ if(route==='/news'&&method==='POST'){if(!offline.me.isAdmin)throw Error('Доступно только администратору');const item={id:uid(),title:payload.title,body:payload.body,publishedAt:new Date().toISOString()};offline.news.unshift(item);persist();return {item};}
  if(route==='/notifications/read'&&method==='POST'){offline.notifications.forEach(n=>n.readAt=new Date().toISOString());persist();return {ok:true};}
  if(route==='/ratings/history')return {events:[]};
  if(route.startsWith('/leaderboard'))return {sport:new URLSearchParams(route.split('?')[1]||'').get('sport')||'tennis',players:[]};

@@ -25,6 +25,11 @@ db.exec(`PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON;
  CREATE TABLE IF NOT EXISTS rating_events(game_id TEXT NOT NULL REFERENCES games(id),user_id TEXT NOT NULL REFERENCES users(id),sport TEXT NOT NULL,previous REAL NOT NULL,current REAL NOT NULL,created_at TEXT NOT NULL,PRIMARY KEY(game_id,user_id));
  CREATE TABLE IF NOT EXISTS notifications(id TEXT PRIMARY KEY,user_id TEXT NOT NULL REFERENCES users(id),body TEXT NOT NULL,link TEXT,created_at TEXT NOT NULL,read_at TEXT);
  CREATE INDEX IF NOT EXISTS notifications_user ON notifications(user_id,created_at);
+ CREATE TABLE IF NOT EXISTS bot_outbox(notification_id TEXT PRIMARY KEY REFERENCES notifications(id),user_id TEXT NOT NULL,body TEXT NOT NULL,link TEXT,attempts INTEGER NOT NULL DEFAULT 0,next_attempt_at TEXT NOT NULL);
+ CREATE INDEX IF NOT EXISTS bot_outbox_due ON bot_outbox(next_attempt_at);
+ CREATE TABLE IF NOT EXISTS news(id TEXT PRIMARY KEY,author_id TEXT NOT NULL REFERENCES users(id),title TEXT NOT NULL,body TEXT NOT NULL,published_at TEXT NOT NULL);
+ CREATE TABLE IF NOT EXISTS court_geocodes(address_key TEXT PRIMARY KEY,latitude REAL,longitude REAL,checked_at TEXT NOT NULL);
+ CREATE TABLE IF NOT EXISTS event_reminders(kind TEXT NOT NULL CHECK(kind IN ('game','training')),listing_id TEXT NOT NULL,user_id TEXT NOT NULL REFERENCES users(id),hours_before INTEGER NOT NULL CHECK(hours_before IN (12,3)),sent_at TEXT NOT NULL,PRIMARY KEY(kind,listing_id,user_id,hours_before));
  CREATE TABLE IF NOT EXISTS training_reviews(training_id TEXT NOT NULL REFERENCES trainings(id),user_id TEXT NOT NULL REFERENCES users(id),coach_id TEXT NOT NULL REFERENCES users(id),score INTEGER NOT NULL,body TEXT NOT NULL,created_at TEXT NOT NULL,PRIMARY KEY(training_id,user_id));
  CREATE TABLE IF NOT EXISTS completed_trainings(training_id TEXT PRIMARY KEY REFERENCES trainings(id),completed_at TEXT NOT NULL);
  CREATE TABLE IF NOT EXISTS join_requests(kind TEXT NOT NULL CHECK(kind IN ('game','training')),listing_id TEXT NOT NULL,user_id TEXT NOT NULL REFERENCES users(id),status TEXT NOT NULL CHECK(status IN ('pending','approved','rejected')),created_at TEXT NOT NULL,resolved_at TEXT,PRIMARY KEY(kind,listing_id,user_id));
@@ -63,14 +68,55 @@ if(!trainingColumns.has('requires_approval'))db.exec('ALTER TABLE trainings ADD 
 if(!trainingColumns.has('ntrp_min')||!trainingColumns.has('ntrp_max'))db.exec('UPDATE trainings SET ntrp_min=avg_ntrp,ntrp_max=avg_ntrp WHERE avg_ntrp IS NOT NULL');
 if(!db.prepare('PRAGMA table_info(chat_messages)').all().some(column=>column.name==='read_at'))db.exec('ALTER TABLE chat_messages ADD COLUMN read_at TEXT');
 const now = () => new Date().toISOString();
+const insertNotification=db.prepare('INSERT INTO notifications VALUES(?,?,?,?,?,?)');
+const enqueueBot=db.prepare('INSERT INTO bot_outbox(notification_id,user_id,body,link,next_attempt_at) VALUES(?,?,?,?,?)');
 function notifyUser(userId,message,link=''){
-  db.prepare('INSERT INTO notifications VALUES(?,?,?,?,?,?)').run(crypto.randomUUID(),userId,message,link,now(),null);
-  if(process.env.BOT_TOKEN&&/^\d+$/.test(userId)){
-    fetch(`https://api.telegram.org/bot${process.env.BOT_TOKEN}/sendMessage`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({chat_id:userId,text:`Tennis GO · ${message}`}),signal:AbortSignal.timeout(5000)})
-      .then(async r=>{if(!r.ok)console.warn('Telegram notification rejected:',r.status);})
-      .catch(e=>console.warn('Telegram notification unavailable:',e.message));
+  const id=crypto.randomUUID();insertNotification.run(id,userId,message,link,now(),null);
+  if(process.env.BOT_TOKEN&&/^\d+$/.test(userId))enqueueBot.run(id,userId,message,link,now());
+}
+function broadcast(message,link=''){
+  const users=db.prepare("SELECT id FROM users WHERE registration_version>=2 AND role IN ('player','coach')").all();
+  db.exec('BEGIN');try{for(const user of users)notifyUser(user.id,message,link);db.exec('COMMIT');}catch(error){db.exec('ROLLBACK');throw error;}
+}
+let botSending=false,botPausedUntil=0;
+async function sendNextBotMessage(){
+  if(botSending||!process.env.BOT_TOKEN||Date.now()<botPausedUntil)return;
+  const item=db.prepare('SELECT * FROM bot_outbox WHERE next_attempt_at<=? ORDER BY next_attempt_at,notification_id LIMIT 1').get(now());if(!item)return;
+  botSending=true;
+  try{
+    const payload={chat_id:item.user_id,text:`Tennis GO · ${item.body}`};
+    if(item.link&&process.env.BOT_USERNAME)payload.reply_markup={inline_keyboard:[[{text:'Открыть в Tennis GO',url:`https://t.me/${process.env.BOT_USERNAME.replace(/^@/,'')}?startapp=${item.link}`}]]};
+    const response=await fetch(`https://api.telegram.org/bot${process.env.BOT_TOKEN}/sendMessage`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload),signal:AbortSignal.timeout(8000)});
+    const result=await response.json();
+    if(result.ok){db.prepare('DELETE FROM bot_outbox WHERE notification_id=?').run(item.notification_id);return;}
+    if(response.status===403||response.status===400){db.prepare('DELETE FROM bot_outbox WHERE notification_id=?').run(item.notification_id);console.warn('Telegram message unavailable for user:',item.user_id,response.status);return;}
+    const delay=response.status===429?Math.max(1,Number(result.parameters?.retry_after)||5):Math.min(3600,2**Math.min(item.attempts+1,10));
+    if(response.status===429)botPausedUntil=Date.now()+delay*1000;
+    db.prepare('UPDATE bot_outbox SET attempts=attempts+1,next_attempt_at=? WHERE notification_id=?').run(new Date(Date.now()+delay*1000).toISOString(),item.notification_id);
+  }catch(error){const delay=Math.min(3600,2**Math.min(item.attempts+1,10));db.prepare('UPDATE bot_outbox SET attempts=attempts+1,next_attempt_at=? WHERE notification_id=?').run(new Date(Date.now()+delay*1000).toISOString(),item.notification_id);console.warn('Telegram delivery retry:',error.message);}
+  finally{botSending=false;}
+}
+if(process.env.BOT_TOKEN)setInterval(sendNextBotMessage,70).unref();
+function processEventReminders(reference=new Date()){
+  const time=reference.getTime();
+  for(const hours of [12,3]){
+    const cutoff=new Date(time+hours*3600000).toISOString(),earliest=new Date(time+(hours-.5)*3600000).toISOString();
+    const games=db.prepare("SELECT g.id,g.sport,g.venue,g.starts_at AS startsAt,p.user_id AS userId,p.joined_at AS joinedAt FROM games g JOIN participants p ON p.game_id=g.id WHERE g.cancelled_at IS NULL AND g.starts_at>? AND g.starts_at<=?").all(earliest,cutoff);
+    const trainings=db.prepare("SELECT t.id,t.sport,t.court_id AS courtId,t.starts_at AS startsAt,t.coach_id AS coachId,t.created_at AS createdAt,p.user_id AS userId,p.joined_at AS joinedAt FROM trainings t LEFT JOIN training_participants p ON p.training_id=t.id WHERE t.cancelled_at IS NULL AND t.starts_at>? AND t.starts_at<=?").all(earliest,cutoff);
+    const remind=(kind,id,userId,startsAt,sport,place)=>{
+      const date=new Date(startsAt).toLocaleString('ru-RU',{timeZone:'Europe/Moscow',day:'numeric',month:'short',hour:'2-digit',minute:'2-digit'});
+      db.exec('BEGIN');try{
+        const result=db.prepare('INSERT OR IGNORE INTO event_reminders VALUES(?,?,?,?,?)').run(kind,id,userId,hours,now());
+        if(result.changes)notifyUser(userId,`Напоминание: ${kind==='game'?'игра':'тренировка'} (${sport==='padel'?'падел':'теннис'}) через ${hours} ч · ${date} · ${place}`,`${kind}_${id}`);
+        db.exec('COMMIT');
+      }catch(error){db.exec('ROLLBACK');throw error;}
+    };
+    for(const g of games)if(g.joinedAt<=new Date(Date.parse(g.startsAt)-hours*3600000).toISOString())remind('game',g.id,g.userId,g.startsAt,g.sport,g.venue);
+    const courts=allCourts();
+    for(const t of trainings){const before=new Date(Date.parse(t.startsAt)-hours*3600000).toISOString(),place=courts.find(c=>c.id===t.courtId)?.name||'корт';if(t.userId&&t.joinedAt<=before)remind('training',t.id,t.userId,t.startsAt,t.sport,place);if(t.createdAt<=before)remind('training',t.id,t.coachId,t.startsAt,t.sport,place);}
   }
 }
+if(import.meta.url===`file://${process.argv[1]}`){const tick=()=>{try{processEventReminders();}catch(error){console.warn('Reminders unavailable:',error.message);}};setTimeout(tick,2000).unref();setInterval(tick,60000).unref();}
 function closePendingRequests(kind,id,message){const waiting=pendingRequests.all(kind,id);db.prepare("UPDATE join_requests SET status='rejected',resolved_at=? WHERE kind=? AND listing_id=? AND status='pending'").run(now(),kind,id);for(const user of waiting)notifyUser(user.id,message);}
 function ratingOf(id,sport){return db.prepare('SELECT rating,rd,volatility,matches,wins,losses FROM player_ratings WHERE user_id=? AND sport=?').get(id,sport)||initialRating();}
 function ratingSummary(id){return Object.fromEntries(['tennis','padel'].map(sport=>[sport,ratingOf(id,sport)]));}
@@ -82,7 +128,23 @@ function applyMatchRating(game,members){
 }
 const coaches = [{id:'anastasia',name:'Анастасия',sport:'Теннис',description:'Индивидуальная тренировка · любой уровень',price:2500,image:'/assets/coach.jpg'}];
 const courts = JSON.parse(fs.readFileSync(path.join(publicDir,'courts.json'),'utf8'));
-function allCourts(){const approved=db.prepare("SELECT owner_id,name,address,city,phone,sports,photo_data,surface,opens_at,hourly_price,closes_at FROM clubs WHERE status='approved'").all();return [...courts,...approved.flatMap(club=>JSON.parse(club.sports).map(sport=>({id:`club-${club.owner_id}-${sport}`,name:club.name,address:club.address,city:club.city,phone:club.phone,sport,clubId:club.owner_id,surface:club.surface||null,opensAt:club.opens_at||null,closesAt:club.closes_at||null,hourlyPrice:club.hourly_price??null,image:club.photo_data||'/assets/court_generic.svg'})))];}
+const courtAddressKey=c=>`${c.city||'Краснодар'}, ${c.address}`.toLocaleLowerCase('ru-RU');
+function allCourts(){const approved=db.prepare("SELECT owner_id,name,address,city,phone,sports,photo_data,surface,opens_at,hourly_price,closes_at FROM clubs WHERE status='approved'").all();return [...courts,...approved.flatMap(club=>JSON.parse(club.sports).map(sport=>({id:`club-${club.owner_id}-${sport}`,name:club.name,address:club.address,city:club.city,phone:club.phone,sport,clubId:club.owner_id,surface:club.surface||null,opensAt:club.opens_at||null,closesAt:club.closes_at||null,hourlyPrice:club.hourly_price??null,image:club.photo_data||'/assets/court_generic.svg'})))].map(c=>{const point=db.prepare('SELECT latitude,longitude FROM court_geocodes WHERE address_key=?').get(courtAddressKey(c));return {...c,latitude:point?.latitude??null,longitude:point?.longitude??null};});}
+let geocoding=false,geocodeRetryAfter=0;
+async function geocodeNextCourt(){
+  if(geocoding||Date.now()<geocodeRetryAfter)return;
+  const target=allCourts().find(c=>{const row=db.prepare('SELECT latitude,checked_at FROM court_geocodes WHERE address_key=?').get(courtAddressKey(c));return !row||row.latitude===null&&Date.now()-Date.parse(row.checked_at)>86400000;});
+  if(!target)return;geocoding=true;
+  try{
+    const query=new URL('https://nominatim.openstreetmap.org/search');query.searchParams.set('q',`${target.address}, ${target.city}, Россия`);query.searchParams.set('format','jsonv2');query.searchParams.set('addressdetails','1');query.searchParams.set('countrycodes','ru');query.searchParams.set('limit','3');
+    const response=await fetch(query,{headers:{'User-Agent':'TennisGO/0.20.4 (https://tennisgo-production.up.railway.app; Telegram @RVL233)','Accept-Language':'ru'},signal:AbortSignal.timeout(8000)});
+    if(!response.ok)throw Error(`HTTP ${response.status}`);
+    const results=await response.json();const match=results.find(p=>p.display_name?.toLocaleLowerCase('ru-RU').includes(target.city.toLocaleLowerCase('ru-RU'))&&Number.isFinite(Number(p.lat))&&Number.isFinite(Number(p.lon)));
+    db.prepare('INSERT INTO court_geocodes(address_key,latitude,longitude,checked_at) VALUES(?,?,?,?) ON CONFLICT(address_key) DO UPDATE SET latitude=excluded.latitude,longitude=excluded.longitude,checked_at=excluded.checked_at').run(courtAddressKey(target),match?Number(match.lat):null,match?Number(match.lon):null,now());
+  }catch(error){geocodeRetryAfter=Date.now()+(String(error.message).includes('429')?3600000:300000);console.warn('Court geocoding unavailable:',target.id,error.message);}
+  finally{geocoding=false;}
+}
+if(import.meta.url===`file://${process.argv[1]}`)setInterval(()=>geocodeNextCourt().catch(e=>console.warn('Court geocoding failed:',e.message)),1500).unref();
 const cities=JSON.parse(fs.readFileSync(path.join(publicDir,'cities.json'),'utf8'));
 if(!process.env.BOT_TOKEN && db.prepare('SELECT COUNT(*) AS n FROM games').get().n===0){
   const owner='demo-host-0001';db.prepare('INSERT OR IGNORE INTO users(id,name,username,created_at,role,gender,ntrp_level,registered_at,registration_version) VALUES(?,?,?,?,?,?,?,?,?)').run(owner,'Алексей','','2026-01-01T00:00:00.000Z','player','male',3,'2026-01-01T00:00:00.000Z',2);
@@ -149,7 +211,7 @@ async function weatherHours(city='Краснодар'){
  weatherPending.set(city,pending);try{return await pending;}finally{weatherPending.delete(city);}
 }
 async function api(req,res,url){
-  if(url.pathname==='/api/config')return send(res,200,{demo:!process.env.BOT_TOKEN,botUsername:process.env.BOT_USERNAME||'',cities,version:'0.20.2'});
+  if(url.pathname==='/api/config')return send(res,200,{demo:!process.env.BOT_TOKEN,botUsername:process.env.BOT_USERNAME||'',cities,version:'0.20.4'});
   if(req.method==='GET'&&url.pathname==='/api/weather'){const city=url.searchParams.get('city')||'Краснодар';if(!cities.includes(city))fail(400,'Выберите город из списка');const hours=await weatherHours(city);return send(res,200,{hours,status:weatherCaches.get(city).status,city,source:'Open-Meteo'});}
   const identity=authenticate(req);addUser.run(identity.id,identity.name,identity.username,now());
   const me=userDTO(identity.id);
@@ -207,6 +269,20 @@ async function api(req,res,url){
     return send(res,200,{user:userDTO(me.id)});
   }
   if(!me.registered)fail(403,'Завершите регистрацию');
+  if(url.pathname==='/api/news'&&req.method==='GET'){
+    if(me.role==='club')fail(403,'Новости доступны участникам');
+    const items=db.prepare("SELECT id,title,body,published_at AS publishedAt FROM news ORDER BY published_at DESC LIMIT 100").all();
+    return send(res,200,{items});
+  }
+  if(url.pathname==='/api/news'&&req.method==='POST'){
+    if(!isAdmin(me.id)||me.role==='club')fail(403,'Публикация доступна только администратору');
+    const b=await body(req),title=str(b.title,120),content=str(b.body,2000);
+    if(title.length<5||content.length<10)fail(400,'Введите заголовок от 5 и текст от 10 символов');
+    const item={id:crypto.randomUUID(),title,body:content,publishedAt:now()};
+    db.prepare('INSERT INTO news VALUES(?,?,?,?,?)').run(item.id,me.id,title,content,item.publishedAt);
+    broadcast(`Новость: ${title}`,'news');
+    return send(res,201,{item});
+  }
   if(url.pathname==='/api/club/calendar'&&req.method==='GET'){
     if(me.role!=='club')fail(403,'Календарь доступен представителю клуба');
     const day=url.searchParams.get('date')||new Intl.DateTimeFormat('en-CA',{timeZone:'Europe/Moscow',year:'numeric',month:'2-digit',day:'2-digit'}).format(new Date());
@@ -421,6 +497,7 @@ async function api(req,res,url){
     if((min===null)!==(max===null)||min!==null&&(!Number.isFinite(min)||!Number.isFinite(max)||min<1||max>7||min>max||min*2!==Math.round(min*2)||max*2!==Math.round(max*2)))fail(400,'Укажите диапазон NTRP от 1.0 до 7.0 либо без ограничения');
     const avg=min===null?null:(min+max)/2;
     const id=crypto.randomUUID();db.prepare('INSERT INTO trainings(id,coach_id,sport,format,seats,court_id,starts_at,duration,avg_ntrp,price,note,created_at,ntrp_min,ntrp_max,requires_approval) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)').run(id,me.id,sport,format,seats,court.id,startsAt,duration,avg,price,str(b.note,240),now(),min,max,b.requiresApproval?1:0);
+    broadcast(`Новая тренировка: ${sport==='tennis'?'теннис':'падел'} · ${me.name} · ${court.name} · ${new Date(startsAt).toLocaleString('ru-RU',{timeZone:'Europe/Moscow',day:'numeric',month:'short',hour:'2-digit',minute:'2-digit'})}`,`training_${id}`);
     return send(res,201,{training:trainingDTO(getTraining.get(id),me.id)});
   }
   const trainingEditor=url.pathname.match(/^\/api\/trainings\/([a-f0-9-]{36})$/i);
@@ -442,6 +519,7 @@ async function api(req,res,url){
     if((min===null)!==(max===null)||min!==null&&(!Number.isFinite(min)||!Number.isFinite(max)||min<1||max>7||min>max||min*2!==Math.round(min*2)||max*2!==Math.round(max*2)))fail(400,'Проверьте диапазон NTRP');
     const requiresApproval=b.requiresApproval===undefined?!!old.requires_approval:b.requiresApproval;
     db.prepare('UPDATE trainings SET sport=?,format=?,seats=?,court_id=?,starts_at=?,duration=?,avg_ntrp=?,ntrp_min=?,ntrp_max=?,price=?,note=?,requires_approval=? WHERE id=?').run(sport,format,seats,court.id,startsAt,duration,min===null?null:(min+max)/2,min,max,price,str(b.note,240),requiresApproval?1:0,old.id);
+    if(startsAt!==old.starts_at)db.prepare("DELETE FROM event_reminders WHERE kind='training' AND listing_id=?").run(old.id);
     if(!requiresApproval&&old.requires_approval)closePendingRequests('training',old.id,'Тренер изменил условия записи. Отправьте заявку снова.');
     return send(res,200,{training:trainingDTO(getTraining.get(old.id),me.id)});
   }
@@ -501,6 +579,7 @@ async function api(req,res,url){
       db.prepare('INSERT INTO games(id,sport,city,venue,court_id,starts_at,duration,level_min,level_max,seats,price,kind,note,creator_id,created_at,opponent_gender,requires_approval) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)').run(id,sport,city,venue,court.id,startsAt,duration,min,max,seats,price,kind,str(b.note,240),me.id,now(),opponentGender,b.requiresApproval?1:0);
       db.prepare('INSERT INTO participants VALUES(?,?,?)').run(id,me.id,now());db.exec('COMMIT');
     }catch(e){db.exec('ROLLBACK');throw e;}
+    broadcast(`Новая игра: ${sport==='tennis'?'теннис':'падел'} · ${court.name} · ${new Date(startsAt).toLocaleString('ru-RU',{timeZone:'Europe/Moscow',day:'numeric',month:'short',hour:'2-digit',minute:'2-digit'})}`,`game_${id}`);
     return send(res,201,{game:gameDTO(getGame.get(id),me.id)});
   }
   const gameEditor=url.pathname.match(/^\/api\/games\/([a-f0-9-]{36})$/i);
@@ -520,6 +599,7 @@ async function api(req,res,url){
     if(!Number.isFinite(min)||!Number.isFinite(max)||min<1||max>7||max<min||min*2!==Math.round(min*2)||max*2!==Math.round(max*2)||![60,90,120].includes(duration)||!Number.isInteger(price)||price<0||price>100000)fail(400,'Проверьте параметры игры');
     const requiresApproval=b.requiresApproval===undefined?!!old.requires_approval:b.requiresApproval;
     db.prepare('UPDATE games SET sport=?,kind=?,seats=?,court_id=?,venue=?,city=?,starts_at=?,duration=?,level_min=?,level_max=?,price=?,opponent_gender=?,note=?,requires_approval=? WHERE id=?').run(sport,kind,seats,court.id,court.name,court.city||'Краснодар',startsAt,duration,min,max,price,opponentGender,str(b.note,240),requiresApproval?1:0,old.id);
+    if(startsAt!==old.starts_at)db.prepare("DELETE FROM event_reminders WHERE kind='game' AND listing_id=?").run(old.id);
     if(!requiresApproval&&old.requires_approval)closePendingRequests('game',old.id,'Организатор изменил условия записи. Отправьте заявку снова.');
     return send(res,200,{game:gameDTO(getGame.get(old.id),me.id)});
   }
@@ -617,4 +697,4 @@ const server=http.createServer(async(req,res)=>{
   }catch(e){if(!res.headersSent)send(res,e.status||500,{error:e.status?e.message:'Ошибка сервера'});else res.end();}
 });
 if(import.meta.url===`file://${process.argv[1]}`)server.listen(Number(process.env.PORT||3000),'0.0.0.0',()=>console.log(`Tennis GO Mini App: http://localhost:${process.env.PORT||3000} (${process.env.BOT_TOKEN?'Telegram':'demo'})`));
-export {server,db,verifyInitData};
+export {server,db,verifyInitData,sendNextBotMessage,processEventReminders};

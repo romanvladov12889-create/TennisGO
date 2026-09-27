@@ -7,13 +7,14 @@ import path from 'node:path';
 import {DatabaseSync} from 'node:sqlite';
 const dir=fs.mkdtempSync(path.join(os.tmpdir(),'tennis-go-'));
 process.env.DB_PATH=path.join(dir,'test.sqlite');
+process.env.ADMIN_DEMO_USER_ID='demo-admin-0009';
 const oldDb=new DatabaseSync(process.env.DB_PATH);
 oldDb.exec('CREATE TABLE users(id TEXT PRIMARY KEY, name TEXT NOT NULL, username TEXT, tennis_rating INTEGER NOT NULL DEFAULT 1200, padel_rating INTEGER NOT NULL DEFAULT 1200, created_at TEXT NOT NULL)');
 oldDb.prepare('INSERT INTO users(id,name,username,created_at) VALUES(?,?,?,?)').run('demo-legacy-0001','Старый игрок','','2026-09-01T00:00:00.000Z');
 oldDb.exec('CREATE TABLE trainings(id TEXT PRIMARY KEY, coach_id TEXT NOT NULL REFERENCES users(id), format TEXT NOT NULL, seats INTEGER NOT NULL, court_id TEXT NOT NULL, starts_at TEXT NOT NULL, duration INTEGER NOT NULL, avg_ntrp REAL, price INTEGER NOT NULL, note TEXT NOT NULL, created_at TEXT NOT NULL)');
 oldDb.prepare('INSERT INTO trainings VALUES(?,?,?,?,?,?,?,?,?,?,?)').run('11111111-1111-4111-8111-111111111111','demo-legacy-0001','individual',1,'dinamo',new Date(Date.now()+86400000).toISOString(),60,3.5,1000,'Старая тренировка','2026-09-01T00:00:00.000Z');
 oldDb.close();
-const {server,db,verifyInitData}=await import('../server.mjs');
+const {server,db,verifyInitData,sendNextBotMessage,processEventReminders}=await import('../server.mjs');
 assert.equal(db.prepare('PRAGMA table_info(users)').all().some(column=>column.name==='ntrp_level'),true);
 await new Promise(resolve=>server.listen(0,'127.0.0.1',resolve));
 const base=`http://127.0.0.1:${server.address().port}`;
@@ -41,6 +42,7 @@ test('game lifecycle and mutual confirmation preserve self selected NTRP',async(
  const start=new Date(Date.now()+4*3600000).toISOString();
  const create=await request('/games','demo-player-0001','POST',{sport:'tennis',kind:'rating',seats:2,city:'Краснодар',courtId:'dinamo',startsAt:start,duration:60,levelMin:2.5,levelMax:3.5,price:1200,note:'Тест',opponentGender:'female'});
  assert.equal(create.status,201);assert.equal(create.data.game.courtAddress,'ул. Красная, 190');assert.equal(create.data.game.creatorName,'Роман Игрок');assert.equal(create.data.game.creatorPhotoData,pixel);assert.equal(create.data.game.opponentGender,'female');assert.equal(create.data.game.creatorGender,'female');assert.equal(create.data.game.creatorNtrp,3.5);assert.equal(create.data.game.creatorRole,'player');const id=create.data.game.id;
+ assert.ok((await request('/notifications','demo-player-0002')).data.items.some(n=>n.body.startsWith('Новая игра:')));
  assert.equal((await request(`/games/${id}/join`,'demo-player-0003','POST')).status,403);
  const invalid=await request('/games','demo-player-0001','POST',{sport:'padel',kind:'friendly',seats:4,courtId:'dinamo',startsAt:start,duration:60,levelMin:2.5,levelMax:3.5,price:800});assert.equal(invalid.status,400);
  const join=await request(`/games/${id}/join`,'demo-player-0002','POST');assert.equal(join.status,200);assert.equal(join.data.game.members.length,2);
@@ -76,6 +78,18 @@ test('coach registration and avatar persist',async()=>{
  assert.equal((await request('/profile','demo-coach-0005','POST',{...registration('Иван','male','coach'),coachSports:[]})).status,400);
  assert.equal((await request('/profile','demo-coach-0005','POST',{...registration('Иван','male','coach'),coachYears:-1})).status,400);
 });
+test('only administrator publishes news and all registered participants get one notification',async()=>{
+ assert.equal((await request('/news','demo-player-0001','POST',{title:'Новости кортов',body:'Открыта регистрация на новый турнир'})).status,403);
+ assert.equal((await request('/profile','demo-admin-0009','POST',registration('Администратор','male'))).status,200);
+ assert.equal((await request('/news','demo-admin-0009','POST',{title:'Коротко',body:'Мало'})).status,400);
+ const before=db.prepare("SELECT COUNT(*) AS n FROM notifications WHERE user_id=? AND body LIKE 'Новость:%'").get('demo-player-0002').n;
+ const created=await request('/news','demo-admin-0009','POST',{title:'Новый турнир Tennis GO',body:'Открыта регистрация на новый турнир для всех участников.'});
+ assert.equal(created.status,201);
+ assert.equal((await request('/news','demo-player-0002')).data.items[0].title,'Новый турнир Tennis GO');
+ assert.equal(db.prepare("SELECT COUNT(*) AS n FROM notifications WHERE user_id=? AND body LIKE 'Новость:%'").get('demo-player-0002').n,before+1);
+ assert.equal(db.prepare("SELECT COUNT(*) AS n FROM notifications WHERE user_id=? AND body LIKE 'Новость:%'").get('demo-admin-0009').n,1);
+ assert.equal(db.prepare('SELECT COUNT(*) AS n FROM bot_outbox').get().n,0);
+});
 test('coach publishes training and players reserve available places',async()=>{
  const start=new Date(Date.now()+48*3600000).toISOString();
  const payload={sport:'tennis',format:'split',seats:2,courtId:'dinamo',startsAt:start,duration:90,ntrpMin:2.5,ntrpMax:4,price:1500,note:'Подача и игра у сетки'};
@@ -87,6 +101,7 @@ test('coach publishes training and players reserve available places',async()=>{
  assert.equal((await request('/trainings','demo-coach-0004','POST',{...payload,ntrpMin:4,ntrpMax:2.5})).status,400);
  assert.equal((await request('/trainings','demo-coach-0004','POST',{...payload,ntrpMin:null})).status,400);
  const created=await request('/trainings','demo-coach-0004','POST',payload);assert.equal(created.status,201);assert.equal(created.data.training.sport,'tennis');assert.equal(created.data.training.coachGender,'female');assert.equal(created.data.training.ntrpMin,2.5);assert.equal(created.data.training.ntrpMax,4);assert.equal(created.data.training.format,'split');assert.equal(created.data.training.coachName,'Мария');assert.equal(created.data.training.coachYears,6);assert.equal(created.data.training.coachAvatarId,'female-serve');assert.equal(created.data.training.coachPhotoData,coachPhoto);const id=created.data.training.id;
+ assert.ok((await request('/notifications','demo-player-0002')).data.items.some(n=>n.body.startsWith('Новая тренировка:')));
  const unrestricted=await request('/trainings','demo-coach-0004','POST',{...payload,ntrpMin:null,ntrpMax:null});assert.equal(unrestricted.status,201);assert.equal(unrestricted.data.training.ntrpMin,null);
  assert.equal((await request(`/trainings/${id}/join`,'demo-coach-0004','POST')).status,409);
  assert.equal((await request(`/trainings/${id}/join`,'demo-player-0001','POST')).status,200);
@@ -299,5 +314,40 @@ test('monthly event counts confirmed rating matches and shows real leaders',asyn
  const confirmedThisMonth=db.prepare("SELECT COUNT(*) AS n FROM participants p JOIN games g ON g.id=p.game_id WHERE p.user_id=? AND g.kind='rating' AND g.result_confirmed=1 AND g.starts_at>=? AND g.starts_at<?");
  const [year,month]=event.data.month.split('-').map(Number),start=new Date(`${year}-${String(month).padStart(2,'0')}-01T00:00:00+03:00`),next=new Date(`${month===12?year+1:year}-${String(month===12?1:month+1).padStart(2,'0')}-01T00:00:00+03:00`);
  assert.equal(event.data.games,confirmedThisMonth.get('demo-player-0001',start.toISOString(),next.toISOString()).n);
+});
+test('queued Telegram message has Mini App link and leaves outbox after delivery',async()=>{
+ const id='987654321',notificationId=crypto.randomUUID();
+ db.prepare('INSERT INTO users(id,name,created_at) VALUES(?,?,?)').run(id,'Тест Telegram',new Date().toISOString());
+ db.prepare('INSERT INTO notifications VALUES(?,?,?,?,?,?)').run(notificationId,id,'Новая игра: тест','game_test',new Date().toISOString(),null);
+ db.prepare('INSERT INTO bot_outbox(notification_id,user_id,body,link,next_attempt_at) VALUES(?,?,?,?,?)').run(notificationId,id,'Новая игра: тест','game_test',new Date().toISOString());
+ const originalFetch=globalThis.fetch;let sent;
+ process.env.BOT_TOKEN='test-token';process.env.BOT_USERNAME='TennisGOgo_bot';
+ globalThis.fetch=async(_,options)=>{sent=JSON.parse(options.body);return {status:200,json:async()=>({ok:true})};};
+ try{await sendNextBotMessage();assert.equal(sent.chat_id,id);assert.equal(sent.reply_markup.inline_keyboard[0][0].url,'https://t.me/TennisGOgo_bot?startapp=game_test');assert.equal(db.prepare('SELECT COUNT(*) AS n FROM bot_outbox WHERE notification_id=?').get(notificationId).n,0);}
+ finally{globalThis.fetch=originalFetch;delete process.env.BOT_TOKEN;delete process.env.BOT_USERNAME;}
+});
+test('game and training reminders reach joined members at 12 and 3 hours exactly once',async()=>{
+ const startsAt=new Date(Date.now()+13*3600000).toISOString(),baseGame={sport:'tennis',kind:'friendly',seats:2,courtId:'dinamo',startsAt,duration:60,levelMin:2.5,levelMax:4,price:500,opponentGender:'any'};
+ const game=(await request('/games','demo-player-0001','POST',baseGame)).data.game;
+ assert.equal((await request(`/games/${game.id}/join`,'demo-player-0002','POST')).status,200);
+ const training=(await request('/trainings','demo-coach-0004','POST',{sport:'tennis',format:'split',seats:2,courtId:'dinamo',startsAt,duration:60,ntrpMin:null,ntrpMax:null,price:600})).data.training;
+ assert.equal((await request(`/trainings/${training.id}/join`,'demo-player-0002','POST')).status,200);
+ const at12=new Date(Date.parse(startsAt)-12*3600000),at3=new Date(Date.parse(startsAt)-3*3600000);
+ processEventReminders(at12);processEventReminders(at12);
+ for(const [kind,id,recipient] of [['game',game.id,'demo-player-0002'],['training',training.id,'demo-player-0002'],['training',training.id,'demo-coach-0004']]){
+   assert.equal(db.prepare('SELECT COUNT(*) AS n FROM event_reminders WHERE kind=? AND listing_id=? AND user_id=? AND hours_before=12').get(kind,id,recipient).n,1);
+ }
+ processEventReminders(at3);processEventReminders(at3);
+ assert.equal(db.prepare('SELECT COUNT(*) AS n FROM event_reminders WHERE listing_id=? AND user_id=?').get(game.id,'demo-player-0002').n,2);
+ assert.equal(db.prepare('SELECT COUNT(*) AS n FROM event_reminders WHERE listing_id=? AND user_id=?').get(training.id,'demo-player-0002').n,2);
+ assert.ok((await request('/notifications','demo-player-0002')).data.items.some(n=>n.body.includes('через 3 ч')));
+});
+test('catalog exposes cached court coordinates without storing the player location',async()=>{
+ db.prepare('INSERT INTO court_geocodes VALUES(?,?,?,?)').run('краснодар, ул. красная, 190',45.0401,38.9766,new Date().toISOString());
+ const result=await request('/catalog','demo-player-0002');
+ assert.equal(result.status,200);
+ const court=result.data.courts.find(c=>c.id==='dinamo');
+ assert.equal(court.latitude,45.0401);assert.equal(court.longitude,38.9766);
+ assert.equal(result.data.courts.find(c=>c.id==='padel360').latitude,null);
 });
 test.after(async()=>{await new Promise(resolve=>server.close(resolve));db.close();fs.rmSync(dir,{recursive:true,force:true});});

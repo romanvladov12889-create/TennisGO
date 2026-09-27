@@ -38,9 +38,14 @@ test('offline HTML renders home, games, and create form without a server',async(
  const quick=app.innerHTML.match(/<div class="quick">([\s\S]*?)<\/div>/)?.[1];
  assert.ok(quick);assert.equal((quick.match(/<button /g)||[]).length,4);
  for(const label of ['Новости','Сообщество','Клубы и корты','Тренера'])assert.ok(quick.includes(label));
+ assert.ok(quick.includes('quick-icon')&&quick.includes('<svg'));
+ assert.ok(app.innerHTML.includes('Telegram @RVL233')&&!app.innerHTML.includes('Прогноз:'));
  assert.ok(!quick.includes('Создать игру'));
  vm.runInContext("state.form='news';render()",context);
  assert.ok(app.innerHTML.includes('Новости')&&app.innerHTML.includes('Игровой марафон')&&app.innerHTML.includes('туба теннисных мячей'));
+ vm.runInContext("state.me.isAdmin=true;state.news=[{id:'1',title:'Новый турнир',body:'Игры на выходных',publishedAt:new Date().toISOString()}];render()",context);
+ assert.ok(app.innerHTML.includes('id="news-form"')&&app.innerHTML.includes('Опубликовать и уведомить всех')&&app.innerHTML.includes('Новый турнир'));
+ vm.runInContext('state.me.isAdmin=false;state.news=[]',context);
  vm.runInContext("state.form='coaches';state.peopleMode='coach';render()",context);
  assert.ok(app.innerHTML.includes('Тренера')&&app.innerHTML.includes('Поиск по имени'));
  await vm.runInContext('loadPeople(true)',context);
@@ -93,6 +98,12 @@ test('offline HTML renders home, games, and create form without a server',async(
  assert.ok(app.innerHTML.includes('Играть</button>'));
  vm.runInContext("state.tab='play';state.playView='games';render()",context);
  assert.ok(app.innerHTML.includes('class="play-title">Играть')&&app.innerHTML.includes('data-play-view="games"')&&app.innerHTML.includes('Найти игру'));
+ assert.ok(app.innerHTML.includes('data-locate')&&app.innerHTML.includes('© OpenStreetMap'));
+ vm.runInContext("state.catalog.courts[0].latitude=45;state.catalog.courts[0].longitude=39;state.location={latitude:45,longitude:39};render()",context);
+ assert.ok(app.innerHTML.includes('Рядом · 0.0 км'));
+ assert.ok(vm.runInContext("(state.location.latitude=45.06,distanceBadge('dinamo'))",context).includes('Близко'));
+ assert.ok(vm.runInContext("(state.location.latitude=45.11,distanceBadge('dinamo'))",context).includes('Далеко'));
+ vm.runInContext('state.location=null;render()',context);
  assert.ok(app.innerHTML.includes('data-play-view="tournaments"')&&app.innerHTML.includes('data-play-view="camps"'));
  vm.runInContext("state.playView='tournaments';render()",context);assert.ok(app.innerHTML.includes('Раздел находится в разработке'));
  vm.runInContext("state.playView='camps';render()",context);assert.ok(app.innerHTML.includes('Раздел находится в разработке'));
