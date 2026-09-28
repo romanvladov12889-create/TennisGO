@@ -147,7 +147,14 @@ function applyMatchRating(game,members){
 const coaches = [{id:'anastasia',name:'Анастасия',sport:'Теннис',description:'Индивидуальная тренировка · любой уровень',price:2500,image:'/assets/coach.jpg'}];
 const courts = JSON.parse(fs.readFileSync(path.join(publicDir,'courts.json'),'utf8'));
 const courtAddressKey=c=>`${c.city||'Краснодар'}, ${c.address}`.toLocaleLowerCase('ru-RU');
-function allCourts(){const approved=db.prepare("SELECT owner_id,name,address,city,phone,sports,photo_data,surface,opens_at,hourly_price,closes_at FROM clubs WHERE status='approved'").all();return [...courts,...approved.flatMap(club=>JSON.parse(club.sports).map(sport=>({id:`club-${club.owner_id}-${sport}`,name:club.name,address:club.address,city:club.city,phone:club.phone,sport,clubId:club.owner_id,surface:club.surface||null,opensAt:club.opens_at||null,closesAt:club.closes_at||null,hourlyPrice:club.hourly_price??null,image:club.photo_data||'/assets/court_generic.svg'})))].map(c=>{const point=db.prepare('SELECT latitude,longitude FROM court_geocodes WHERE address_key=?').get(courtAddressKey(c));return {...c,latitude:point?.latitude??null,longitude:point?.longitude??null};});}
+function courtTemplateImage(sport,surface){
+  if(sport==='padel')return '/assets/court-padel-outdoor.jpg';
+  const type=String(surface||'').toLocaleLowerCase('ru-RU');
+  if(type.includes('grass')||type.includes('трава'))return '/assets/court-grass.jpg';
+  if(type.includes('clay')||type.includes('грунт'))return '/assets/court-clay.jpg';
+  return '/assets/court-hard-outdoor.jpg';
+}
+function allCourts(){const approved=db.prepare("SELECT owner_id,name,address,city,phone,sports,photo_data,surface,opens_at,hourly_price,closes_at FROM clubs WHERE status='approved'").all();return [...courts,...approved.flatMap(club=>JSON.parse(club.sports).map(sport=>({id:`club-${club.owner_id}-${sport}`,name:club.name,address:club.address,city:club.city,phone:club.phone,sport,clubId:club.owner_id,surface:club.surface||null,opensAt:club.opens_at||null,closesAt:club.closes_at||null,hourlyPrice:club.hourly_price??null,image:club.photo_data||courtTemplateImage(sport,club.surface)})))].map(c=>{const point=db.prepare('SELECT latitude,longitude FROM court_geocodes WHERE address_key=?').get(courtAddressKey(c));return {...c,latitude:point?.latitude??null,longitude:point?.longitude??null};});}
 let geocoding=false,geocodeRetryAfter=0;
 async function geocodeNextCourt(){
   if(geocoding||Date.now()<geocodeRetryAfter)return;
@@ -240,7 +247,7 @@ async function weatherHours(city='Краснодар'){
  weatherPending.set(city,pending);try{return await pending;}finally{weatherPending.delete(city);}
 }
 async function api(req,res,url){
-  if(url.pathname==='/api/config')return send(res,200,{demo:!process.env.BOT_TOKEN,botUsername:process.env.BOT_USERNAME||'',cities,version:'0.20.6'});
+  if(url.pathname==='/api/config')return send(res,200,{demo:!process.env.BOT_TOKEN,botUsername:process.env.BOT_USERNAME||'',cities,version:'0.20.7'});
   if(req.method==='GET'&&url.pathname==='/api/weather'){const city=url.searchParams.get('city')||'Краснодар';if(!cities.includes(city))fail(400,'Выберите город из списка');const hours=await weatherHours(city);return send(res,200,{hours,status:weatherCaches.get(city).status,city,source:'Open-Meteo'});}
   const identity=authenticate(req);addUser.run(identity.id,identity.name,identity.username,now());
   const me=userDTO(identity.id);
