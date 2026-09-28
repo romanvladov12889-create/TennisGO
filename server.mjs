@@ -85,13 +85,25 @@ function broadcast(message,link=''){
   db.exec('BEGIN');try{for(const user of users)notifyUser(user.id,message,link);db.exec('COMMIT');}catch(error){db.exec('ROLLBACK');throw error;}
 }
 let botSending=false,botPausedUntil=0;
+function notificationButton(link){
+  const raw=process.env.APP_URL||process.env.RAILWAY_PUBLIC_DOMAIN&&`https://${process.env.RAILWAY_PUBLIC_DOMAIN}`;
+  if(raw){
+    try{const url=new URL(raw);if(url.protocol==='https:'){
+      url.pathname='/';url.search='';url.hash='';
+      if(link&&/^[a-zA-Z0-9_-]{1,64}$/.test(link))url.searchParams.set('start',link);
+      return {text:'Открыть в Tennis GO',web_app:{url:url.toString()}};
+    }}catch{}
+  }
+  if(process.env.BOT_USERNAME)return {text:'Открыть в Tennis GO',url:`https://t.me/${process.env.BOT_USERNAME.replace(/^@/,'')}?startapp=${encodeURIComponent(link||'home')}`};
+  return null;
+}
 async function sendNextBotMessage(){
   if(botSending||!process.env.BOT_TOKEN||Date.now()<botPausedUntil)return;
   const item=db.prepare('SELECT * FROM bot_outbox WHERE next_attempt_at<=? ORDER BY next_attempt_at,notification_id LIMIT 1').get(now());if(!item)return;
   botSending=true;
   try{
     const payload={chat_id:item.user_id,text:`Tennis GO · ${item.body}`};
-    if(item.link&&process.env.BOT_USERNAME)payload.reply_markup={inline_keyboard:[[{text:'Открыть в Tennis GO',url:`https://t.me/${process.env.BOT_USERNAME.replace(/^@/,'')}?startapp=${item.link}`}]]};
+    const button=notificationButton(item.link);if(button)payload.reply_markup={inline_keyboard:[[button]]};
     const response=await fetch(`https://api.telegram.org/bot${process.env.BOT_TOKEN}/sendMessage`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload),signal:AbortSignal.timeout(8000)});
     const result=await response.json();
     if(result.ok){db.prepare('DELETE FROM bot_outbox WHERE notification_id=?').run(item.notification_id);return;}
@@ -143,7 +155,7 @@ async function geocodeNextCourt(){
   if(!target)return;geocoding=true;
   try{
     const query=new URL('https://nominatim.openstreetmap.org/search');query.searchParams.set('q',`${target.address}, ${target.city}, Россия`);query.searchParams.set('format','jsonv2');query.searchParams.set('addressdetails','1');query.searchParams.set('countrycodes','ru');query.searchParams.set('limit','3');
-    const response=await fetch(query,{headers:{'User-Agent':'TennisGO/0.20.5 (https://tennisgo-production.up.railway.app; Telegram @RVL233)','Accept-Language':'ru'},signal:AbortSignal.timeout(8000)});
+    const response=await fetch(query,{headers:{'User-Agent':'TennisGO/0.20.6 (https://tennisgo-production.up.railway.app; Telegram @RVL233)','Accept-Language':'ru'},signal:AbortSignal.timeout(8000)});
     if(!response.ok)throw Error(`HTTP ${response.status}`);
     const results=await response.json();const match=results.find(p=>p.display_name?.toLocaleLowerCase('ru-RU').includes(target.city.toLocaleLowerCase('ru-RU'))&&Number.isFinite(Number(p.lat))&&Number.isFinite(Number(p.lon)));
     db.prepare('INSERT INTO court_geocodes(address_key,latitude,longitude,checked_at) VALUES(?,?,?,?) ON CONFLICT(address_key) DO UPDATE SET latitude=excluded.latitude,longitude=excluded.longitude,checked_at=excluded.checked_at').run(courtAddressKey(target),match?Number(match.lat):null,match?Number(match.lon):null,now());
@@ -228,7 +240,7 @@ async function weatherHours(city='Краснодар'){
  weatherPending.set(city,pending);try{return await pending;}finally{weatherPending.delete(city);}
 }
 async function api(req,res,url){
-  if(url.pathname==='/api/config')return send(res,200,{demo:!process.env.BOT_TOKEN,botUsername:process.env.BOT_USERNAME||'',cities,version:'0.20.5'});
+  if(url.pathname==='/api/config')return send(res,200,{demo:!process.env.BOT_TOKEN,botUsername:process.env.BOT_USERNAME||'',cities,version:'0.20.6'});
   if(req.method==='GET'&&url.pathname==='/api/weather'){const city=url.searchParams.get('city')||'Краснодар';if(!cities.includes(city))fail(400,'Выберите город из списка');const hours=await weatherHours(city);return send(res,200,{hours,status:weatherCaches.get(city).status,city,source:'Open-Meteo'});}
   const identity=authenticate(req);addUser.run(identity.id,identity.name,identity.username,now());
   const me=userDTO(identity.id);
@@ -811,4 +823,4 @@ const server=http.createServer(async(req,res)=>{
   }catch(e){if(!res.headersSent)send(res,e.status||500,{error:e.status?e.message:'Ошибка сервера'});else res.end();}
 });
 if(import.meta.url===`file://${process.argv[1]}`)server.listen(Number(process.env.PORT||3000),'0.0.0.0',()=>console.log(`Tennis GO Mini App: http://localhost:${process.env.PORT||3000} (${process.env.BOT_TOKEN?'Telegram':'demo'})`));
-export {server,db,verifyInitData,sendNextBotMessage,processEventReminders};
+export {server,db,verifyInitData,sendNextBotMessage,processEventReminders,notificationButton};
