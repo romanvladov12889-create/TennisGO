@@ -36,6 +36,9 @@ db.exec(`PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON;
  CREATE TABLE IF NOT EXISTS completed_trainings(training_id TEXT PRIMARY KEY REFERENCES trainings(id),completed_at TEXT NOT NULL);
  CREATE TABLE IF NOT EXISTS join_requests(kind TEXT NOT NULL CHECK(kind IN ('game','training')),listing_id TEXT NOT NULL,user_id TEXT NOT NULL REFERENCES users(id),status TEXT NOT NULL CHECK(status IN ('pending','approved','rejected')),created_at TEXT NOT NULL,resolved_at TEXT,PRIMARY KEY(kind,listing_id,user_id));
  CREATE TABLE IF NOT EXISTS match_confirmations(game_id TEXT NOT NULL REFERENCES games(id),user_id TEXT NOT NULL REFERENCES users(id),phase TEXT NOT NULL CHECK(phase IN ('attendance','result')),created_at TEXT NOT NULL,PRIMARY KEY(game_id,user_id,phase));
+ CREATE TABLE IF NOT EXISTS match_polls(game_id TEXT PRIMARY KEY REFERENCES games(id),status TEXT NOT NULL CHECK(status IN ('pending','confirmed','not_counted')),prompted_at TEXT NOT NULL,resolved_at TEXT,reason TEXT);
+ CREATE TABLE IF NOT EXISTS match_votes(game_id TEXT NOT NULL REFERENCES games(id),user_id TEXT NOT NULL REFERENCES users(id),choice TEXT NOT NULL CHECK(choice IN ('win','loss','no_score')),created_at TEXT NOT NULL,PRIMARY KEY(game_id,user_id));
+ CREATE TABLE IF NOT EXISTS bot_state(key TEXT PRIMARY KEY,value TEXT NOT NULL);
  CREATE TABLE IF NOT EXISTS clubs(owner_id TEXT PRIMARY KEY REFERENCES users(id),name TEXT NOT NULL,address TEXT NOT NULL,city TEXT NOT NULL,phone TEXT NOT NULL,sports TEXT NOT NULL,status TEXT NOT NULL CHECK(status IN ('pending','approved','rejected')),created_at TEXT NOT NULL,reviewed_at TEXT,reviewed_by TEXT);
  CREATE TABLE IF NOT EXISTS court_reservations(id TEXT PRIMARY KEY,club_id TEXT NOT NULL REFERENCES clubs(owner_id),user_id TEXT NOT NULL REFERENCES users(id),sport TEXT NOT NULL,starts_at TEXT NOT NULL,duration INTEGER NOT NULL,created_at TEXT NOT NULL,cancelled_at TEXT);
  CREATE INDEX IF NOT EXISTS court_reservations_club ON court_reservations(club_id,starts_at);
@@ -76,9 +79,13 @@ if(!userColumns.has('last_seen_at'))db.exec('ALTER TABLE users ADD COLUMN last_s
 const now = () => new Date().toISOString();
 const insertNotification=db.prepare('INSERT INTO notifications VALUES(?,?,?,?,?,?)');
 const enqueueBot=db.prepare('INSERT INTO bot_outbox(notification_id,user_id,body,link,next_attempt_at) VALUES(?,?,?,?,?)');
-function notifyUser(userId,message,link=''){
+if(!db.prepare('PRAGMA table_info(bot_outbox)').all().some(x=>x.name==='reply_markup'))db.exec('ALTER TABLE bot_outbox ADD COLUMN reply_markup TEXT');
+function notifyUser(userId,message,link='',replyMarkup=null){
   const id=crypto.randomUUID();insertNotification.run(id,userId,message,link,now(),null);
-  if(process.env.BOT_TOKEN&&/^\d+$/.test(userId))enqueueBot.run(id,userId,message,link,now());
+  if(process.env.BOT_TOKEN&&/^\d+$/.test(userId)){
+    enqueueBot.run(id,userId,message,link,now());
+    if(replyMarkup)db.prepare('UPDATE bot_outbox SET reply_markup=? WHERE notification_id=?').run(JSON.stringify(replyMarkup),id);
+  }
 }
 function broadcast(message,link=''){
   const users=db.prepare("SELECT id FROM users WHERE registration_version>=2 AND role IN ('player','coach') AND blocked_at IS NULL").all();
@@ -103,7 +110,7 @@ async function sendNextBotMessage(){
   botSending=true;
   try{
     const payload={chat_id:item.user_id,text:`Tennis GO · ${item.body}`};
-    const button=notificationButton(item.link);if(button)payload.reply_markup={inline_keyboard:[[button]]};
+    const button=notificationButton(item.link);if(item.reply_markup)payload.reply_markup=JSON.parse(item.reply_markup);else if(button)payload.reply_markup={inline_keyboard:[[button]]};
     const response=await fetch(`https://api.telegram.org/bot${process.env.BOT_TOKEN}/sendMessage`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload),signal:AbortSignal.timeout(8000)});
     const result=await response.json();
     if(result.ok){db.prepare('DELETE FROM bot_outbox WHERE notification_id=?').run(item.notification_id);return;}
@@ -134,18 +141,74 @@ function processEventReminders(reference=new Date()){
     for(const t of trainings){const before=new Date(Date.parse(t.startsAt)-hours*3600000).toISOString(),place=courts.find(c=>c.id===t.courtId)?.name||'корт';if(t.userId&&t.joinedAt<=before)remind('training',t.id,t.userId,t.startsAt,t.sport,place);if(t.createdAt<=before)remind('training',t.id,t.coachId,t.startsAt,t.sport,place);}
   }
 }
-if(import.meta.url===`file://${process.argv[1]}`){const tick=()=>{try{processEventReminders();}catch(error){console.warn('Reminders unavailable:',error.message);}};setTimeout(tick,2000).unref();setInterval(tick,60000).unref();}
+if(import.meta.url===`file://${process.argv[1]}`){const tick=()=>{try{processEventReminders();processMatchPrompts();}catch(error){console.warn('Reminders unavailable:',error.message);}};setTimeout(tick,2000).unref();setInterval(tick,60000).unref();}
 function closePendingRequests(kind,id,message){const waiting=pendingRequests.all(kind,id);db.prepare("UPDATE join_requests SET status='rejected',resolved_at=? WHERE kind=? AND listing_id=? AND status='pending'").run(now(),kind,id);for(const user of waiting)notifyUser(user.id,message);}
 function ratingOf(id,sport){return db.prepare('SELECT rating,rd,volatility,matches,wins,losses FROM player_ratings WHERE user_id=? AND sport=?').get(id,sport)||initialRating();}
 function ratingSummary(id){return Object.fromEntries(['tennis','padel'].map(sport=>[sport,ratingOf(id,sport)]));}
 function applyMatchRating(game,members){
   if(db.prepare('SELECT 1 FROM rating_events WHERE game_id=? LIMIT 1').get(game.id))return;
-  const firstTeamWon=game.result.split(',').reduce((n,set)=>{const [a,b]=set.split(':').map(Number);return n+(a>b?1:-1);},0)>0;
+  const firstTeamWon=game.result==='votes:A'||game.result!=='votes:B'&&game.result.split(',').reduce((n,set)=>{const [a,b]=set.split(':').map(Number);return n+(a>b?1:-1);},0)>0;
   const old=members.map(x=>ratingOf(x.id,game.sport));
   members.forEach((m,i)=>{const rivals=old.filter((_,j)=>j%2!==i%2),opponent={...initialRating(),rating:rivals.reduce((sum,r)=>sum+r.rating,0)/rivals.length,rd:rivals.reduce((sum,r)=>sum+r.rd,0)/rivals.length};const r=updateRating(old[i],opponent,(i%2===0)===firstTeamWon?1:0);db.prepare('INSERT INTO player_ratings(user_id,sport,rating,rd,volatility,matches,wins,losses) VALUES(?,?,?,?,?,?,?,?) ON CONFLICT(user_id,sport) DO UPDATE SET rating=excluded.rating,rd=excluded.rd,volatility=excluded.volatility,matches=excluded.matches,wins=excluded.wins,losses=excluded.losses').run(m.id,game.sport,r.rating,r.rd,r.volatility,r.matches,r.wins,r.losses);db.prepare('INSERT INTO rating_events VALUES(?,?,?,?,?,?)').run(game.id,m.id,game.sport,old[i].rating,r.rating,now());});
 }
+const voteLabels={win:'Победа',loss:'Поражение',no_score:'Мы не играли на счёт'};
+function voteKeyboard(gameId){
+  const rows=Object.entries(voteLabels).map(([choice,label])=>[{text:label,callback_data:`rv:${gameId}:${choice}`}]);
+  const open=notificationButton(`game_${gameId}`);if(open)rows.push([open]);
+  return {inline_keyboard:rows};
+}
+function processMatchPrompts(reference=new Date()){
+  const games=db.prepare("SELECT g.* FROM games g LEFT JOIN match_polls p ON p.game_id=g.id WHERE g.kind='rating' AND g.cancelled_at IS NULL AND g.absence_by IS NULL AND g.result IS NULL AND p.game_id IS NULL AND g.starts_at<=? AND (SELECT COUNT(*) FROM participants m WHERE m.game_id=g.id)=g.seats ORDER BY g.starts_at LIMIT 200").all(reference.toISOString());
+  for(const game of games){
+    if(Date.parse(game.starts_at)+game.duration*60000>reference.getTime())continue;
+    const members=getMembers.all(game.id);if(members.length!==game.seats)continue;
+    const when=new Date(game.starts_at).toLocaleString('ru-RU',{timeZone:'Europe/Moscow',day:'numeric',month:'long',hour:'2-digit',minute:'2-digit'});
+    const address=allCourts().find(c=>c.id===game.court_id)?.address||game.venue;
+    db.exec('BEGIN');try{
+      const inserted=db.prepare("INSERT OR IGNORE INTO match_polls(game_id,status,prompted_at) VALUES(?,'pending',?)").run(game.id,now());
+      if(inserted.changes)for(const [index,member] of members.entries()){
+        const opponents=members.filter((_,j)=>j%2!==index%2).map(x=>x.name).join(', ');
+        notifyUser(member.id,`Укажите результат игры с ${opponents} · ${when} · ${game.venue}, ${address}. Выберите: победа, поражение или не играли на счёт.`, `game_${game.id}`,voteKeyboard(game.id));
+      }
+      db.exec('COMMIT');
+    }catch(error){db.exec('ROLLBACK');throw error;}
+  }
+}
+function recordMatchVote(gameId,userId,choice){
+  if(!Object.hasOwn(voteLabels,choice))fail(400,'Неверный вариант ответа');
+  const game=getGame.get(gameId),poll=db.prepare('SELECT status FROM match_polls WHERE game_id=?').get(gameId);
+  if(!game||game.cancelled_at||game.kind!=='rating'||!poll||poll.status!=='pending')fail(409,'Голосование недоступно');
+  const members=getMembers.all(gameId),index=members.findIndex(x=>x.id===userId);
+  if(index<0||members.length!==game.seats||Date.parse(game.starts_at)+game.duration*60000>Date.now())fail(403,'Вы не участвуете в завершённой игре');
+  let outcome=null;
+  db.exec('BEGIN');try{
+    const inserted=db.prepare('INSERT OR IGNORE INTO match_votes VALUES(?,?,?,?)').run(gameId,userId,choice,now());
+    if(!inserted.changes)fail(409,'Вы уже ответили на этот опрос');
+    const votes=db.prepare('SELECT user_id AS userId,choice FROM match_votes WHERE game_id=?').all(gameId);
+    if(votes.length===members.length){
+      const a=members.filter((_,i)=>i%2===0).map(m=>votes.find(v=>v.userId===m.id).choice);
+      const b=members.filter((_,i)=>i%2===1).map(m=>votes.find(v=>v.userId===m.id).choice);
+      const agreed=a.every(x=>x===a[0])&&b.every(x=>x===b[0])&&((a[0]==='win'&&b[0]==='loss')||(a[0]==='loss'&&b[0]==='win'));
+      if(agreed){
+        db.prepare('UPDATE games SET result=?,result_confirmed=1,result_by=NULL WHERE id=? AND result_confirmed=0').run(a[0]==='win'?'votes:A':'votes:B',gameId);
+        applyMatchRating(getGame.get(gameId),members);
+        db.prepare("UPDATE match_polls SET status='confirmed',resolved_at=?,reason=NULL WHERE game_id=?").run(now(),gameId);
+        outcome='Результаты совпали. Рейтинг Tennis GO обновлён.';
+      }else{
+        const reason=votes.every(v=>v.choice==='no_score')?'Обе стороны указали игру без счёта':'Ответы участников не совпали';
+        db.prepare("UPDATE match_polls SET status='not_counted',resolved_at=?,reason=? WHERE game_id=?").run(now(),reason,gameId);
+        outcome=`${reason}. Игра не засчитана в рейтинг.`;
+      }
+    }
+    db.exec('COMMIT');
+  }catch(error){db.exec('ROLLBACK');throw error;}
+  if(outcome)for(const member of members)notifyUser(member.id,outcome,`game_${gameId}`);
+  return {choice,status:outcome?'resolved':'pending',message:outcome||'Ваш ответ записан. Ожидаем остальных участников.'};
+}
 const coaches = [{id:'anastasia',name:'Анастасия',sport:'Теннис',description:'Индивидуальная тренировка · любой уровень',price:2500,image:'/assets/coach.jpg'}];
 const courts = JSON.parse(fs.readFileSync(path.join(publicDir,'courts.json'),'utf8'));
+const courtPriority=['alfa-tennis','sport-park','dinamo','tennis-park-arena','zhk-luchshiy','trud','setbol','damani','vopreki-tennis','sport-city','indoor-skobeleva','kubgau','zhk-dostoyanie','cska-tennis'];
+const courtRank=c=>c.sport==='tennis'?(courtPriority.indexOf(c.id)<0?courtPriority.length:courtPriority.indexOf(c.id)):100;
 const courtAddressKey=c=>`${c.city||'Краснодар'}, ${c.address}`.toLocaleLowerCase('ru-RU');
 function courtTemplateImage(sport,surface){
   if(sport==='padel')return '/assets/court-padel-outdoor.jpg';
@@ -154,7 +217,7 @@ function courtTemplateImage(sport,surface){
   if(type.includes('clay')||type.includes('грунт'))return '/assets/court-clay.jpg';
   return '/assets/court-hard-outdoor.jpg';
 }
-function allCourts(){const approved=db.prepare("SELECT owner_id,name,address,city,phone,sports,photo_data,surface,opens_at,hourly_price,closes_at FROM clubs WHERE status='approved'").all();return [...courts,...approved.flatMap(club=>JSON.parse(club.sports).map(sport=>({id:`club-${club.owner_id}-${sport}`,name:club.name,address:club.address,city:club.city,phone:club.phone,sport,clubId:club.owner_id,surface:club.surface||null,opensAt:club.opens_at||null,closesAt:club.closes_at||null,hourlyPrice:club.hourly_price??null,image:club.photo_data||courtTemplateImage(sport,club.surface)})))].map(c=>{const point=db.prepare('SELECT latitude,longitude FROM court_geocodes WHERE address_key=?').get(courtAddressKey(c));return {...c,latitude:point?.latitude??null,longitude:point?.longitude??null};});}
+function allCourts(){const approved=db.prepare("SELECT owner_id,name,address,city,phone,sports,photo_data,surface,opens_at,hourly_price,closes_at FROM clubs WHERE status='approved'").all();return [...courts,...approved.flatMap(club=>JSON.parse(club.sports).map(sport=>({id:`club-${club.owner_id}-${sport}`,name:club.name,address:club.address,city:club.city,phone:club.phone,sport,clubId:club.owner_id,surface:club.surface||null,opensAt:club.opens_at||null,closesAt:club.closes_at||null,hourlyPrice:club.hourly_price??null,image:club.photo_data||courtTemplateImage(sport,club.surface)})))].sort((a,b)=>courtRank(a)-courtRank(b)).map(c=>{const point=db.prepare('SELECT latitude,longitude FROM court_geocodes WHERE address_key=?').get(courtAddressKey(c));return {...c,latitude:point?.latitude??null,longitude:point?.longitude??null};});}
 let geocoding=false,geocodeRetryAfter=0;
 async function geocodeNextCourt(){
   if(geocoding||Date.now()<geocodeRetryAfter)return;
@@ -224,8 +287,8 @@ function authenticate(req){
   let name='Игрок';try{name=decodeURIComponent(String(req.headers['x-demo-name']||'Игрок')).slice(0,60).trim()||'Игрок';}catch{}
   return {id,name,username:''};
 }
-function gameDTO(game,viewer){const members=getMembers.all(game.id).map((m,i)=>({...m,team:i%2===0?'A':'B'})),court=allCourts().find(c=>c.id===game.court_id),creator=userDTO(game.creator_id),doubles=game.seats===4;const confirmations=doubles?db.prepare('SELECT user_id AS userId,phase FROM match_confirmations WHERE game_id=?').all(game.id):[];return {id:game.id,sport:game.sport,city:game.city,venue:game.venue,courtId:game.court_id,courtAddress:court?.address||'',startsAt:game.starts_at,duration:game.duration,levelMin:game.level_min,levelMax:game.level_max,seats:game.seats,price:game.price,kind:game.kind,note:game.note,creatorId:game.creator_id,creatorName:creator?.name||'Организатор',creatorAvatarId:creator?.avatarId||null,creatorPhotoData:creator?.photoData||null,creatorGender:creator?.gender||null,creatorNtrp:creator?.ntrpLevel??null,creatorRole:creator?.role||null,opponentGender:game.opponent_gender,cancelled:!!game.cancelled_at,members,joined:members.some(m=>m.id===viewer),result:game.result,resultBy:game.result_by,resultConfirmed:!!game.result_confirmed,resultDisputed:!!game.result_disputed_at,resultDisputeReason:game.result_dispute_reason||null,attendanceBy:game.attendance_by,attendanceDone:doubles?confirmations.some(c=>c.userId===viewer&&c.phase==='attendance'):game.attendance_by===viewer||!!game.attendance_confirmed_at&&members.some(m=>m.id===viewer),attendanceCount:doubles?confirmations.filter(c=>c.phase==='attendance').length:(game.attendance_confirmed_at?2:game.attendance_at?1:0),attendanceConfirmed:doubles?confirmations.filter(c=>c.phase==='attendance').length===4:!!game.attendance_confirmed_at,resultAcknowledged:doubles?confirmations.some(c=>c.userId===viewer&&c.phase==='result'):false,resultConfirmationCount:doubles?confirmations.filter(c=>c.phase==='result').length:(game.result_confirmed?2:game.result?1:0),absenceBy:game.absence_by,absenceReason:game.absence_reason,absenceDisputed:!!game.absence_disputed_at,...requestState('game',game.id,viewer,game)};}
-function trainingDTO(training,viewer){const coach=userDTO(training.coach_id),members=getTrainingMembers.all(training.id),court=allCourts().find(c=>c.id===training.court_id);return {id:training.id,sport:training.sport||'tennis',city:court?.city||'Краснодар',coachId:training.coach_id,coachName:coach?.name||'Тренер',coachGender:coach?.gender||null,coachYears:coach?.coachYears??null,coachAvatarId:coach?.avatarId||null,coachPhotoData:coach?.photoData||null,format:training.format,seats:training.seats,courtId:training.court_id,courtName:court?.name||'',courtAddress:court?.address||'',startsAt:training.starts_at,duration:training.duration,ntrpMin:training.ntrp_min,ntrpMax:training.ntrp_max,price:training.price,note:training.note,cancelled:!!training.cancelled_at,completed:!!db.prepare('SELECT 1 FROM completed_trainings WHERE training_id=?').get(training.id),reviewed:!!db.prepare('SELECT 1 FROM training_reviews WHERE training_id=? AND user_id=?').get(training.id,viewer),members,joined:members.some(m=>m.id===viewer),...requestState('training',training.id,viewer,training)};}
+function gameDTO(game,viewer){const members=getMembers.all(game.id).map((m,i)=>({...m,team:i%2===0?'A':'B'})),court=allCourts().find(c=>c.id===game.court_id),creator=userDTO(game.creator_id),doubles=game.seats===4;const confirmations=doubles?db.prepare('SELECT user_id AS userId,phase FROM match_confirmations WHERE game_id=?').all(game.id):[];return {id:game.id,sport:game.sport,city:game.city,venue:game.venue,courtId:game.court_id,courtAddress:court?.address||'',startsAt:game.starts_at,duration:game.duration,levelMin:game.level_min,levelMax:game.level_max,seats:game.seats,price:game.price,kind:game.kind,note:game.note,creatorId:game.creator_id,creatorName:creator?.name||'Организатор',creatorAvatarId:creator?.avatarId||null,creatorPhotoData:creator?.photoData||null,creatorGender:creator?.gender||null,creatorNtrp:creator?.ntrpLevel??null,creatorRole:creator?.role||null,opponentGender:game.opponent_gender,cancelled:!!game.cancelled_at,members,joined:members.some(m=>m.id===viewer),result:game.result,resultBy:game.result_by,resultConfirmed:!!game.result_confirmed,resultDisputed:!!game.result_disputed_at,resultDisputeReason:game.result_dispute_reason||null,attendanceBy:game.attendance_by,attendanceDone:doubles?confirmations.some(c=>c.userId===viewer&&c.phase==='attendance'):game.attendance_by===viewer||!!game.attendance_confirmed_at&&members.some(m=>m.id===viewer),attendanceCount:doubles?confirmations.filter(c=>c.phase==='attendance').length:(game.attendance_confirmed_at?2:game.attendance_at?1:0),attendanceConfirmed:doubles?confirmations.filter(c=>c.phase==='attendance').length===4:!!game.attendance_confirmed_at,resultAcknowledged:doubles?confirmations.some(c=>c.userId===viewer&&c.phase==='result'):false,resultConfirmationCount:doubles?confirmations.filter(c=>c.phase==='result').length:(game.result_confirmed?2:game.result?1:0),absenceBy:game.absence_by,absenceReason:game.absence_reason,absenceDisputed:!!game.absence_disputed_at,courtType:court?.courtType||null,voteStatus:db.prepare('SELECT status FROM match_polls WHERE game_id=?').get(game.id)?.status||null,myVote:db.prepare('SELECT choice FROM match_votes WHERE game_id=? AND user_id=?').get(game.id,viewer)?.choice||null,voteCount:db.prepare('SELECT COUNT(*) AS n FROM match_votes WHERE game_id=?').get(game.id).n,...requestState('game',game.id,viewer,game)};}
+function trainingDTO(training,viewer){const coach=userDTO(training.coach_id),members=getTrainingMembers.all(training.id),court=allCourts().find(c=>c.id===training.court_id);return {id:training.id,sport:training.sport||'tennis',city:court?.city||'Краснодар',coachId:training.coach_id,coachName:coach?.name||'Тренер',coachGender:coach?.gender||null,coachYears:coach?.coachYears??null,coachAvatarId:coach?.avatarId||null,coachPhotoData:coach?.photoData||null,format:training.format,seats:training.seats,courtId:training.court_id,courtName:court?.name||'',courtAddress:court?.address||'',courtType:court?.courtType||null,startsAt:training.starts_at,duration:training.duration,ntrpMin:training.ntrp_min,ntrpMax:training.ntrp_max,price:training.price,note:training.note,cancelled:!!training.cancelled_at,completed:!!db.prepare('SELECT 1 FROM completed_trainings WHERE training_id=?').get(training.id),reviewed:!!db.prepare('SELECT 1 FROM training_reviews WHERE training_id=? AND user_id=?').get(training.id,viewer),members,joined:members.some(m=>m.id===viewer),...requestState('training',training.id,viewer,training)};}
 async function body(req,maxLength=16384){let raw='';for await(const chunk of req){raw+=chunk;if(raw.length>maxLength)fail(413,'Слишком большой запрос');}try{return JSON.parse(raw||'{}');}catch{fail(400,'Неверный JSON');}}
 function str(v,max=100){return typeof v==='string'?v.trim().slice(0,max):'';}
 function date(v){const n=Date.parse(v);if(!Number.isFinite(n))fail(400,'Неверная дата');return new Date(n).toISOString();}
@@ -247,7 +310,7 @@ async function weatherHours(city='Краснодар'){
  weatherPending.set(city,pending);try{return await pending;}finally{weatherPending.delete(city);}
 }
 async function api(req,res,url){
-  if(url.pathname==='/api/config')return send(res,200,{demo:!process.env.BOT_TOKEN,botUsername:process.env.BOT_USERNAME||'',cities,version:'0.20.7'});
+  if(url.pathname==='/api/config')return send(res,200,{demo:!process.env.BOT_TOKEN,botUsername:process.env.BOT_USERNAME||'',cities,version:'0.20.9'});
   if(req.method==='GET'&&url.pathname==='/api/weather'){const city=url.searchParams.get('city')||'Краснодар';if(!cities.includes(city))fail(400,'Выберите город из списка');const hours=await weatherHours(city);return send(res,200,{hours,status:weatherCaches.get(city).status,city,source:'Open-Meteo'});}
   const identity=authenticate(req);addUser.run(identity.id,identity.name,identity.username,now());
   const me=userDTO(identity.id);
@@ -697,6 +760,11 @@ async function api(req,res,url){
     if(mine)rows=rows.filter(g=>getMembers.all(g.id).some(m=>m.id===me.id));
     return send(res,200,{games:rows.map(g=>gameDTO(g,me.id))});
   }
+  if(req.method==='GET'&&url.pathname==='/api/match-polls'){
+    processMatchPrompts();
+    const rows=db.prepare("SELECT g.* FROM match_polls p JOIN games g ON g.id=p.game_id JOIN participants m ON m.game_id=g.id LEFT JOIN match_votes v ON v.game_id=g.id AND v.user_id=m.user_id WHERE m.user_id=? AND p.status='pending' AND v.user_id IS NULL AND g.cancelled_at IS NULL ORDER BY g.starts_at DESC LIMIT 10").all(me.id);
+    return send(res,200,{games:rows.map(g=>gameDTO(g,me.id))});
+  }
   if(req.method==='POST'&&url.pathname==='/api/games'){
     const b=await body(req);const sport=str(b.sport),kind=str(b.kind),opponentGender=b.opponentGender??'any';
     if(b.requiresApproval!==undefined&&typeof b.requiresApproval!=='boolean')fail(400,'Проверьте подтверждение заявок');
@@ -736,12 +804,14 @@ async function api(req,res,url){
     if(!requiresApproval&&old.requires_approval)closePendingRequests('game',old.id,'Организатор изменил условия записи. Отправьте заявку снова.');
     return send(res,200,{game:gameDTO(getGame.get(old.id),me.id)});
   }
-  const match=url.pathname.match(/^\/api\/games\/([a-f0-9-]{36})(?:\/(join|leave|attend|confirm-attendance|report-absence|contest-absence|result|confirm|dispute))?$/i);
+  const match=url.pathname.match(/^\/api\/games\/([a-f0-9-]{36})(?:\/(join|leave|attend|confirm-attendance|report-absence|contest-absence|result|confirm|dispute|vote))?$/i);
   if(match){const game=getGame.get(match[1]);if(!game)fail(404,'Игра не найдена');const action=match[2];
     if(req.method==='GET'&&!action)return send(res,200,{game:gameDTO(game,me.id)});
     if(req.method!=='POST')fail(405,'Метод не поддерживается');
     if(game.cancelled_at)fail(409,'Игра отменена');
     const members=getMembers.all(game.id),joined=members.some(m=>m.id===me.id);
+    if(action==='vote')return send(res,200,{vote:recordMatchVote(game.id,me.id,str((await body(req)).choice,20)),game:gameDTO(getGame.get(game.id),me.id)});
+    if(['attend','confirm-attendance','result','confirm','dispute','report-absence','contest-absence'].includes(action)&&db.prepare('SELECT 1 FROM match_polls WHERE game_id=?').get(game.id))fail(409,'По игре уже идёт голосование');
     if(action==='join'){
       if(Date.parse(game.starts_at)<Date.now())fail(409,'Игра уже началась');if(joined)fail(409,'Вы уже в игре');if(members.length>=game.seats)fail(409,'Мест больше нет');
       if(game.opponent_gender!=='any'&&me.gender!==game.opponent_gender)fail(403,'Создатель игры указал другой пол участников');
@@ -751,6 +821,7 @@ async function api(req,res,url){
         notifyUser(game.creator_id,`${me.name} просит присоединиться к игре`);
       }else{db.prepare('INSERT INTO participants VALUES(?,?,?)').run(game.id,me.id,now());db.prepare("DELETE FROM join_requests WHERE kind='game' AND listing_id=? AND user_id=?").run(game.id,me.id);notifyUser(game.creator_id,`${me.name} присоединился к игре`);}
     }else if(action==='leave'){
+      if(game.kind==='rating'&&Date.parse(game.starts_at)+game.duration*60000<=Date.now())fail(409,'Рейтинговая игра завершена');
       const pending=getRequest.get('game',game.id,me.id)?.status==='pending';
       if(!joined&&!pending)fail(409,'Вы не участвуете');if(game.creator_id===me.id)fail(409,'Создатель пока не может удалить игру');
       if(game.seats===4&&db.prepare('SELECT 1 FROM match_confirmations WHERE game_id=? LIMIT 1').get(game.id))fail(409,'Участники уже начали подтверждать матч');
@@ -829,5 +900,33 @@ const server=http.createServer(async(req,res)=>{
     res.writeHead(200,{'Content-Type':responses[path.extname(file)]||'application/octet-stream','Cache-Control':'no-store','X-Content-Type-Options':'nosniff','Content-Security-Policy':"default-src 'self'; script-src 'self' https://telegram.org; style-src 'self'; img-src 'self' data:; connect-src 'self'; frame-ancestors https://web.telegram.org https://*.telegram.org"});fs.createReadStream(file).pipe(res);
   }catch(e){if(!res.headersSent)send(res,e.status||500,{error:e.status?e.message:'Ошибка сервера'});else res.end();}
 });
-if(import.meta.url===`file://${process.argv[1]}`)server.listen(Number(process.env.PORT||3000),'0.0.0.0',()=>console.log(`Tennis GO Mini App: http://localhost:${process.env.PORT||3000} (${process.env.BOT_TOKEN?'Telegram':'demo'})`));
-export {server,db,verifyInitData,sendNextBotMessage,processEventReminders,notificationButton};
+async function botMethod(method,payload,timeout=8000){
+  const response=await fetch(`https://api.telegram.org/bot${process.env.BOT_TOKEN}/${method}`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload),signal:AbortSignal.timeout(timeout)});
+  const result=await response.json();if(!result.ok)throw Error(`${method}: ${result.description||response.status}`);return result.result;
+}
+async function handleBotUpdate(update){
+  const query=update.callback_query;if(!query)return;
+  const match=/^rv:([a-f0-9-]{36}):(win|loss|no_score)$/i.exec(query.data||'');if(!match)return;
+  let message='Не удалось записать ответ';
+  try{
+    if(String(query.message?.chat?.id)!==String(query.from?.id))fail(403,'Ответ доступен только в личном чате');
+    const user=getUser.get(String(query.from.id));if(!user||!user.registered||user.blockedAt)fail(403,'Профиль недоступен');
+    message=recordMatchVote(match[1],String(query.from.id),match[2]).message;
+    if(query.message?.message_id)botMethod('editMessageReplyMarkup',{chat_id:query.message.chat.id,message_id:query.message.message_id,reply_markup:{inline_keyboard:[]}}).catch(()=>{});
+  }catch(error){message=error.message;}
+  await botMethod('answerCallbackQuery',{callback_query_id:query.id,text:message.slice(0,190),show_alert:false});
+}
+async function botPollLoop(){
+  if(!process.env.BOT_TOKEN)return;
+  try{
+    const offset=Number(db.prepare("SELECT value FROM bot_state WHERE key='offset'").get()?.value||0);
+    const updates=await botMethod('getUpdates',{offset,timeout:20,allowed_updates:['callback_query']},26000);
+    for(const update of updates){
+      try{await handleBotUpdate(update);}catch(error){console.warn('Telegram callback unavailable:',error.message);}
+      db.prepare("INSERT INTO bot_state(key,value) VALUES('offset',?) ON CONFLICT(key) DO UPDATE SET value=excluded.value").run(String(update.update_id+1));
+    }
+  }catch(error){console.warn('Telegram polling unavailable:',error.message);}
+  finally{setTimeout(botPollLoop,1500).unref();}
+}
+if(import.meta.url===`file://${process.argv[1]}`){server.listen(Number(process.env.PORT||3000),'0.0.0.0',()=>console.log(`Tennis GO Mini App: http://localhost:${process.env.PORT||3000} (${process.env.BOT_TOKEN?'Telegram':'demo'})`));if(process.env.BOT_TOKEN)setTimeout(botPollLoop,1500).unref();}
+export {server,db,verifyInitData,sendNextBotMessage,processEventReminders,processMatchPrompts,recordMatchVote,handleBotUpdate,notificationButton};
