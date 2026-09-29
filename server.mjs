@@ -60,7 +60,7 @@ const userColumns=new Set(db.prepare('PRAGMA table_info(users)').all().map(colum
 if(!userColumns.has('display_name'))db.exec('ALTER TABLE users ADD COLUMN display_name TEXT');
 if(!userColumns.has('ntrp_level'))db.exec('ALTER TABLE users ADD COLUMN ntrp_level REAL');
 if(!userColumns.has('photo_data'))db.exec('ALTER TABLE users ADD COLUMN photo_data TEXT');
-for(const [column,type] of [['role','TEXT'],['gender','TEXT'],['playing_years','INTEGER'],['about','TEXT'],['coach_years','INTEGER'],['avatar_id','TEXT'],['registered_at','TEXT'],['registration_version','INTEGER NOT NULL DEFAULT 0'],['city','TEXT'],['phone','TEXT'],['telegram_contact','TEXT'],['coach_sports','TEXT'],['preferred_sports',"TEXT NOT NULL DEFAULT '[]'"]]){
+for(const [column,type] of [['role','TEXT'],['gender','TEXT'],['playing_years','INTEGER'],['about','TEXT'],['coach_years','INTEGER'],['coach_courts',"TEXT NOT NULL DEFAULT '[]'"],['coach_achievements','TEXT'],['avatar_id','TEXT'],['registered_at','TEXT'],['registration_version','INTEGER NOT NULL DEFAULT 0'],['city','TEXT'],['phone','TEXT'],['telegram_contact','TEXT'],['coach_sports','TEXT'],['preferred_sports',"TEXT NOT NULL DEFAULT '[]'"]]){
   if(!userColumns.has(column))db.exec(`ALTER TABLE users ADD COLUMN ${column} ${type}`);
 }
 // Existing users already entered the app before registration was introduced.
@@ -273,10 +273,10 @@ if(!process.env.BOT_TOKEN && db.prepare('SELECT COUNT(*) AS n FROM games').get()
   const samples=[['tennis','dinamo',2,'friendly',1200,18],['padel','padel360',4,'friendly',800,20]];
   for(const [sport,courtId,seats,kind,price,hour] of samples){const start=new Date(date);start.setUTCHours(hour-3);const id=crypto.randomUUID(),court=allCourts().find(c=>c.id===courtId);db.prepare('INSERT INTO games(id,sport,city,venue,court_id,starts_at,duration,level_min,level_max,seats,price,kind,note,creator_id,created_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)').run(id,sport,'Краснодар',court.name,court.id,start.toISOString(),90,2.5,3.5,seats,price,kind,'Демо игра · проверьте свободные места',owner,new Date().toISOString());db.prepare('INSERT INTO participants VALUES(?,?,?)').run(id,owner,new Date().toISOString());}
 }
-const getUser = db.prepare("SELECT id,COALESCE(NULLIF(display_name,''),name) AS name,username,ntrp_level AS ntrpLevel,photo_data AS photoData,role,gender,playing_years AS playingYears,about,coach_years AS coachYears,avatar_id AS avatarId,COALESCE(NULLIF(city,''),'Краснодар') AS city,phone,telegram_contact AS telegramContact,coach_sports AS coachSportsRaw,preferred_sports AS preferredSportsRaw,registration_version>=2 AS registered,blocked_at AS blockedAt FROM users WHERE id=?");
+const getUser = db.prepare("SELECT id,COALESCE(NULLIF(display_name,''),name) AS name,username,ntrp_level AS ntrpLevel,photo_data AS photoData,role,gender,playing_years AS playingYears,about,coach_years AS coachYears,coach_courts AS coachCourtsRaw,coach_achievements AS coachAchievements,avatar_id AS avatarId,COALESCE(NULLIF(city,''),'Краснодар') AS city,phone,telegram_contact AS telegramContact,coach_sports AS coachSportsRaw,preferred_sports AS preferredSportsRaw,registration_version>=2 AS registered,blocked_at AS blockedAt FROM users WHERE id=?");
 const addUser = db.prepare('INSERT INTO users(id,name,username,created_at) VALUES(?,?,?,?) ON CONFLICT(id) DO UPDATE SET name=excluded.name,username=excluded.username');
-const saveProfile=db.prepare('UPDATE users SET display_name=?,ntrp_level=?,photo_data=?,role=?,gender=?,playing_years=?,about=?,coach_years=?,avatar_id=?,city=?,phone=?,telegram_contact=?,coach_sports=?,registered_at=COALESCE(registered_at,?),registration_version=2 WHERE id=?');
-function userDTO(id){const user=getUser.get(id);if(!user)return null;const {coachSportsRaw,preferredSportsRaw,...fields}=user;let coachSports=['tennis','padel'],preferredSports=[];try{if(coachSportsRaw)coachSports=JSON.parse(coachSportsRaw);if(preferredSportsRaw)preferredSports=JSON.parse(preferredSportsRaw);}catch{}const admin=isAdmin(id),club=fields.role==='club'||admin?db.prepare('SELECT name,address,city,phone,sports,status,photo_data AS photoData,surface,opens_at AS opensAt,closes_at AS closesAt,hourly_price AS hourlyPrice FROM clubs WHERE owner_id=?').get(id):null;return {...fields,preferredSports:Array.isArray(preferredSports)?preferredSports:[],coachSports:fields.role==='coach'||admin?(coachSports.length?coachSports:['tennis','padel']):[],club:club?{...club,sports:JSON.parse(club.sports)}:null,isAdmin:admin,ratings:ratingSummary(id)};}
+const saveProfile=db.prepare('UPDATE users SET display_name=?,ntrp_level=?,photo_data=?,role=?,gender=?,playing_years=?,about=?,coach_years=?,coach_courts=?,coach_achievements=?,avatar_id=?,city=?,phone=?,telegram_contact=?,coach_sports=?,registered_at=COALESCE(registered_at,?),registration_version=2 WHERE id=?');
+function userDTO(id){const user=getUser.get(id);if(!user)return null;const {coachSportsRaw,coachCourtsRaw,preferredSportsRaw,...fields}=user;let coachSports=['tennis','padel'],coachCourts=[],preferredSports=[];try{if(coachSportsRaw)coachSports=JSON.parse(coachSportsRaw);if(coachCourtsRaw)coachCourts=JSON.parse(coachCourtsRaw);if(preferredSportsRaw)preferredSports=JSON.parse(preferredSportsRaw);}catch{}const admin=isAdmin(id),club=fields.role==='club'||admin?db.prepare('SELECT name,address,city,phone,sports,status,photo_data AS photoData,surface,opens_at AS opensAt,closes_at AS closesAt,hourly_price AS hourlyPrice FROM clubs WHERE owner_id=?').get(id):null;return {...fields,preferredSports:Array.isArray(preferredSports)?preferredSports:[],coachSports:fields.role==='coach'||admin?(coachSports.length?coachSports:['tennis','padel']):[],coachCourts:(fields.role==='coach'||admin&&fields.role!=='club')&&Array.isArray(coachCourts)?coachCourts:[],coachAchievements:fields.role==='coach'||admin&&fields.role!=='club'?fields.coachAchievements||'':'',club:club?{...club,sports:JSON.parse(club.sports)}:null,isAdmin:admin,ratings:ratingSummary(id)};}
 function isAdmin(id){return !!process.env.ADMIN_TELEGRAM_ID&&id===process.env.ADMIN_TELEGRAM_ID||!process.env.BOT_TOKEN&&!!process.env.ADMIN_DEMO_USER_ID&&id===process.env.ADMIN_DEMO_USER_ID;}
 function audit(adminId,action,targetKind,targetId,detail=''){db.prepare('INSERT INTO moderation_actions VALUES(?,?,?,?,?,?,?)').run(crypto.randomUUID(),adminId,action,targetKind,targetId,detail,now());}
 function clubDetails(b,oldPhoto=null){
@@ -344,7 +344,7 @@ async function weatherHours(city='Краснодар'){
  weatherPending.set(city,pending);try{return await pending;}finally{weatherPending.delete(city);}
 }
 async function api(req,res,url){
-  if(url.pathname==='/api/config')return send(res,200,{demo:!process.env.BOT_TOKEN,botUsername:process.env.BOT_USERNAME||'',cities,version:'0.21.3'});
+  if(url.pathname==='/api/config')return send(res,200,{demo:!process.env.BOT_TOKEN,botUsername:process.env.BOT_USERNAME||'',cities,version:'0.22.0'});
   if(req.method==='GET'&&url.pathname==='/api/weather'){const city=url.searchParams.get('city')||'Краснодар';if(!cities.includes(city))fail(400,'Выберите город из списка');const hours=await weatherHours(city);return send(res,200,{hours,status:weatherCaches.get(city).status,city,source:'Open-Meteo'});}
   const identity=authenticate(req);addUser.run(identity.id,identity.name,identity.username,now());
   const me=userDTO(identity.id);
@@ -379,6 +379,13 @@ async function api(req,res,url){
     const item=db.prepare('SELECT owner_id FROM profile_media WHERE id=?').get(ownMedia[1]);if(!item)fail(404,'Медиа не найдено');if(item.owner_id!==me.id)fail(403,'Удалить материал может только его автор');
     db.prepare('DELETE FROM profile_media WHERE id=?').run(ownMedia[1]);fs.rmSync(path.join(mediaDir,ownMedia[1]),{force:true});return send(res,200,{ok:true});
   }
+  if(req.method==='PATCH'&&url.pathname==='/api/profile/city'){
+    if(!me.registered||me.role==='club'&&!isAdmin(me.id))fail(403,'Город клуба меняется в анкете клуба');
+    const b=await body(req,300),city=str(b.city,80);
+    if(!cities.includes(city))fail(400,'Выберите город из списка');
+    if(city!==me.city)db.prepare("UPDATE users SET city=?,coach_courts='[]' WHERE id=?").run(city,me.id);
+    return send(res,200,{user:userDTO(me.id)});
+  }
   if(req.method==='POST'&&url.pathname==='/api/profile'){
     const b=await body(req,450000),name=str(b.name,60),level=b.ntrpLevel===null?null:Number(b.ntrpLevel);
     if(!name)fail(400,'Укажите имя');
@@ -399,7 +406,7 @@ async function api(req,res,url){
       if(!/^([01]\d|2[0-3]):[0-5]\d$/.test(opensAt)||!/^([01]\d|2[0-3]):[0-5]\d$/.test(closesAt)||closesAt<=opensAt)fail(400,'Укажите время работы в пределах одного дня');
       if(!Number.isInteger(hourlyPrice)||hourlyPrice<0||hourlyPrice>100000)fail(400,'Укажите стоимость за час');
       db.exec('BEGIN');try{
-        saveProfile.run(name,null,null,'club',null,null,'',null,null,city,phone,null,'[]',now(),me.id);
+        saveProfile.run(name,null,null,'club',null,null,'',null,'[]','',null,city,phone,null,'[]',now(),me.id);
         db.prepare("INSERT INTO clubs(owner_id,name,address,city,phone,sports,status,created_at,photo_data,surface,opens_at,closes_at,hourly_price) VALUES(?,?,?,?,?,?,'pending',?,?,?,?,?,?) ON CONFLICT(owner_id) DO UPDATE SET name=excluded.name,address=excluded.address,city=excluded.city,phone=excluded.phone,sports=excluded.sports,photo_data=excluded.photo_data,surface=excluded.surface,opens_at=excluded.opens_at,closes_at=excluded.closes_at,hourly_price=excluded.hourly_price,status='pending',reviewed_at=NULL,reviewed_by=NULL").run(me.id,clubName,address,city,phone,JSON.stringify(sports),now(),clubPhoto,surface,opensAt,closesAt,hourlyPrice);
         db.exec('COMMIT');
       }catch(error){db.exec('ROLLBACK');throw error;}
@@ -420,6 +427,11 @@ async function api(req,res,url){
     if(telegramContact&&!/^[a-zA-Z][a-zA-Z0-9_]{4,31}$/.test(telegramContact))fail(400,'Укажите Telegram username без ссылки');
     const coachSports=b.role==='coach'||isAdmin(me.id)?(b.coachSports===undefined?['tennis','padel']:b.coachSports):[];
     if(!Array.isArray(coachSports)||b.role==='coach'&&coachSports.length===0||coachSports.length>2||coachSports.some(s=>!['tennis','padel'].includes(s))||new Set(coachSports).size!==coachSports.length)fail(400,'Выберите теннис, падел или оба вида спорта');
+    const coachCourts=b.role==='coach'||isAdmin(me.id)?b.coachCourts??[]:[];
+    if(!Array.isArray(coachCourts)||coachCourts.length>30||coachCourts.some(id=>typeof id!=='string')||new Set(coachCourts).size!==coachCourts.length)fail(400,'Проверьте выбранные корты');
+    const availableCourts=allCourts();
+    if(coachCourts.some(id=>!availableCourts.some(c=>c.id===id&&(c.city||'Краснодар')===city&&coachSports.includes(c.sport))))fail(400,'Выберите корты вашего города и вида спорта');
+    const coachAchievements=b.role==='coach'||isAdmin(me.id)?str(b.coachAchievements,600):'';
     const about=str(b.about,500),avatarId=b.avatarId===null?null:String(b.avatarId||'');
     if(!['male-serve','male-cap','male-court','female-serve','female-cap','female-court',null].includes(avatarId))fail(400,'Выберите аватарку');
     let photo=b.photoData;
@@ -429,9 +441,10 @@ async function api(req,res,url){
       if(bytes.length>250000||bytes.length<4||bytes[0]!==0xff||bytes[1]!==0xd8||bytes.at(-2)!==0xff||bytes.at(-1)!==0xd9)fail(400,'Некорректная фотография JPEG');
     }
     if(!photo&&!avatarId)fail(400,'Загрузите фото или выберите аватарку');
-    saveProfile.run(name,level,photo,b.role,b.gender,years,about,coachYears,avatarId,city,phone||null,telegramContact||null,JSON.stringify(coachSports),now(),me.id);
+    saveProfile.run(name,level,photo,b.role,b.gender,years,about,coachYears,JSON.stringify(coachCourts),coachAchievements,avatarId,city,phone||null,telegramContact||null,JSON.stringify(coachSports),now(),me.id);
     return send(res,200,{user:userDTO(me.id)});
   }
+  if(req.method==='GET'&&url.pathname==='/api/registration-courts')return send(res,200,{courts:allCourts().map(({id,name,address,city,sport})=>({id,name,address,city,sport}))});
   if(!me.registered)fail(403,'Завершите регистрацию');
   if(url.pathname==='/api/preferences/sports'&&req.method==='PATCH'){
     const selected=(await body(req)).sports;
@@ -628,7 +641,7 @@ async function api(req,res,url){
     const search=str(url.searchParams.get('q'),80),offset=Math.min(10000,Math.max(0,Number(url.searchParams.get('offset'))||0)),role=url.searchParams.get('role');
     if(role!==null&&role!=='coach')fail(400,'Неизвестный фильтр пользователей');
     const ids=db.prepare("SELECT id,COALESCE(NULLIF(display_name,''),name) AS name FROM users WHERE registration_version>=2 AND blocked_at IS NULL AND id<>? AND (? IS NULL OR role=?) ORDER BY COALESCE(NULLIF(display_name,''),name),id").all(me.id,role,role).filter(row=>row.name.toLocaleLowerCase('ru-RU').includes(search.toLocaleLowerCase('ru-RU'))).slice(offset,offset+31);
-    return send(res,200,{users:ids.slice(0,30).map(({id})=>{const {name,role,city,avatarId,photoData,ntrpLevel,coachSports}=userDTO(id);return {id,name,role,city,avatarId,photoData,ntrpLevel,coachSports};}),hasMore:ids.length>30});
+    return send(res,200,{users:ids.slice(0,30).map(({id})=>{const {name,role,city,avatarId,photoData,ntrpLevel,coachSports,coachYears,coachCourts,coachAchievements}=userDTO(id);return {id,name,role,city,avatarId,photoData,ntrpLevel,coachSports,coachYears,coachCourts,coachAchievements};}),hasMore:ids.length>30});
   }
   const joinDecision=url.pathname.match(/^\/api\/(games|trainings)\/([a-f0-9-]{36})\/requests\/([a-zA-Z0-9-]{1,60})\/(approve|reject)$/i);
   if(req.method==='POST'&&joinDecision){
@@ -678,9 +691,9 @@ async function api(req,res,url){
   const userMatch=url.pathname.match(/^\/api\/users\/([a-zA-Z0-9-]{1,60})$/);
   if(req.method==='GET'&&userMatch){
     const user=userDTO(userMatch[1]);if(!user?.registered)fail(404,'Профиль не найден');
-    const {id,name,role,gender,playingYears,ntrpLevel,coachYears,about,avatarId,photoData,city,phone,telegramContact,coachSports,ratings}=user;
+    const {id,name,role,gender,playingYears,ntrpLevel,coachYears,coachCourts,coachAchievements,about,avatarId,photoData,city,phone,telegramContact,coachSports,ratings}=user;
     const reviews=role==='coach'?db.prepare('SELECT score,body,created_at AS createdAt FROM training_reviews WHERE coach_id=? ORDER BY created_at DESC LIMIT 30').all(id):[];
-    return send(res,200,{user:{id,name,role,gender,playingYears,ntrpLevel,coachYears,about,avatarId,photoData,city,phone,telegramContact,coachSports,ratings,reviews}});
+    return send(res,200,{user:{id,name,role,gender,playingYears,ntrpLevel,coachYears,coachCourts,coachAchievements,about,avatarId,photoData,city,phone,telegramContact,coachSports,ratings,reviews}});
   }
   if(req.method==='GET'&&url.pathname==='/api/catalog')return send(res,200,{coaches,courts:allCourts()});
   const chatPath=url.pathname.match(/^\/api\/chats\/(game|training)\/([a-f0-9-]{36})(?:\/([a-zA-Z0-9-]{1,60}))?$/i);
@@ -773,7 +786,7 @@ async function api(req,res,url){
     db.prepare('UPDATE training_requests SET cancelled_at=? WHERE id=?').run(now(),found.id);return send(res,200,{cancelled:true});
   }
   if(req.method==='GET'&&url.pathname==='/api/trainings'){
-    const rows=db.prepare('SELECT * FROM trainings WHERE starts_at>? ORDER BY starts_at LIMIT 100').all(new Date(Date.now()-3600000).toISOString());
+    const rows=db.prepare('SELECT * FROM trainings WHERE starts_at>? ORDER BY starts_at LIMIT 1000').all(new Date(Date.now()-3600000).toISOString());
     return send(res,200,{trainings:rows.map(t=>trainingDTO(t,me.id))});
   }
   if(req.method==='POST'&&url.pathname==='/api/trainings'){
