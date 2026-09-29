@@ -33,7 +33,7 @@ ADMIN_TELEGRAM_ID=ваш_числовой_Telegram_ID
 
 ## 5. Получите HTTPS адрес
 
-В сервисе откройте **Settings → Networking → Public Networking → Generate Domain**. Railway выдаст адрес вида `https://tennis-go-....up.railway.app` с автоматическим TLS сертификатом. Откройте `https://ВАШ_АДРЕС/api/config`: должен вернуться JSON с `"demo":false`, именем бота и текущей версией приложения. Для этой сборки версия — `0.22.0`. Проверить прогноз можно по адресу `https://ВАШ_АДРЕС/api/weather`: `status: "ok"` означает успешную загрузку, `status: "unavailable"` — ошибка запроса к погодному сервису; подробность будет в логах Railway.
+В сервисе откройте **Settings → Networking → Public Networking → Generate Domain**. Railway выдаст адрес вида `https://tennis-go-....up.railway.app` с автоматическим TLS сертификатом. Откройте `https://ВАШ_АДРЕС/api/config`: должен вернуться JSON с `"demo":false`, именем бота и текущей версией приложения. Для этой сборки версия — `0.22.1`. Проверить прогноз можно по адресу `https://ВАШ_АДРЕС/api/weather`: `status: "ok"` означает успешную загрузку, `status: "unavailable"` — ошибка запроса к погодному сервису; подробность будет в логах Railway.
 
 ## 6. Настройте запуск из Telegram
 
