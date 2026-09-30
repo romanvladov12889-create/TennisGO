@@ -326,7 +326,7 @@ function publicName(user){if(!user)return 'Игрок';const name=String(user.na
 function areFriends(a,b){return !!db.prepare("SELECT 1 FROM friendships WHERE status='accepted' AND ((sender_id=? AND receiver_id=?) OR (sender_id=? AND receiver_id=?))").get(a,b,b,a);}
 function listingVisible(listing,viewer,kind){if(!listing.friends_only||isAdmin(viewer))return true;const owner=kind==='game'?listing.creator_id:listing.coach_id;if(owner===viewer||areFriends(owner,viewer))return true;return !!db.prepare(kind==='game'?'SELECT 1 FROM participants WHERE game_id=? AND user_id=?':'SELECT 1 FROM training_participants WHERE training_id=? AND user_id=?').get(listing.id,viewer);}
 function requireListing(listing,viewer,kind){if(!listing||!listingVisible(listing,viewer,kind))fail(404,'Объявление не найдено');return listing;}
-function repeatDates(start,repeat){if(repeat!==undefined&&typeof repeat!=='boolean')fail(400,'Проверьте повторение');return Array.from({length:repeat?31:1},(_,i)=>new Date(Date.parse(start)+i*86400000).toISOString());}
+function repeatDates(start,repeat){if(repeat!==undefined&&typeof repeat!=='boolean')fail(400,'Проверьте повторение');return Array.from({length:repeat?5:1},(_,i)=>new Date(Date.parse(start)+i*7*86400000).toISOString());}
 function online(id){const row=db.prepare('SELECT last_seen_at FROM users WHERE id=?').get(id);return !!row?.last_seen_at&&Date.parse(row.last_seen_at)>Date.now()-120000;}
 function audit(adminId,action,targetKind,targetId,detail=''){db.prepare('INSERT INTO moderation_actions VALUES(?,?,?,?,?,?,?)').run(crypto.randomUUID(),adminId,action,targetKind,targetId,detail,now());}
 function clubDetails(b,oldPhoto=null){
@@ -395,7 +395,7 @@ async function weatherHours(city='Краснодар'){
  weatherPending.set(city,pending);try{return await pending;}finally{weatherPending.delete(city);}
 }
 async function api(req,res,url){
-  if(url.pathname==='/api/config')return send(res,200,{demo:!process.env.BOT_TOKEN,botUsername:process.env.BOT_USERNAME||'',cities,version:'0.25.0'});
+  if(url.pathname==='/api/config')return send(res,200,{demo:!process.env.BOT_TOKEN,botUsername:process.env.BOT_USERNAME||'',cities,version:'0.25.1'});
   if(req.method==='GET'&&url.pathname==='/api/weather'){const city=url.searchParams.get('city')||'Краснодар';if(!cities.includes(city))fail(400,'Выберите город из списка');const hours=await weatherHours(city);return send(res,200,{hours,status:weatherCaches.get(city).status,city,source:'Open-Meteo'});}
   const identity=authenticate(req);addUser.run(identity.id,identity.name,identity.username,now());
   const me=userDTO(identity.id);
@@ -438,7 +438,8 @@ async function api(req,res,url){
     return send(res,200,{user:userDTO(me.id)});
   }
   if(req.method==='POST'&&url.pathname==='/api/profile'){
-    const b=await body(req,450000),name=str(b.name,60),level=b.ntrpLevel===null?null:Number(b.ntrpLevel);
+    const b=await body(req,450000),firstName=b.firstName===undefined?null:str(b.firstName,40),lastName=b.lastName===undefined?null:str(b.lastName,40),name=firstName!==null||lastName!==null?str(`${firstName||''} ${lastName||''}`.trim(),60):str(b.name,60),level=b.ntrpLevel===null?null:Number(b.ntrpLevel);
+    if((firstName!==null||lastName!==null)&&(!firstName||!lastName||!/^\p{L}[\p{L}'’-]*$/u.test(firstName)||!/^\p{L}[\p{L}'’-]*$/u.test(lastName)))fail(400,'Укажите имя и фамилию отдельно');
     if(!name)fail(400,'Укажите имя');
     if(me.role==='club'&&b.role!=='club'&&!isAdmin(me.id))fail(403,'Роль представителя клуба нельзя изменить');
     if(b.role==='club'){
@@ -760,7 +761,7 @@ async function api(req,res,url){
     }
     db.prepare('UPDATE direct_messages SET read_at=? WHERE recipient_id=? AND sender_id=? AND read_at IS NULL AND deleted_at IS NULL').run(now(),me.id,peerId);
     const messages=db.prepare('SELECT * FROM (SELECT id,sender_id AS senderId,body,created_at AS createdAt FROM direct_messages WHERE deleted_at IS NULL AND ((sender_id=? AND recipient_id=?) OR (sender_id=? AND recipient_id=?)) ORDER BY created_at DESC LIMIT 100) ORDER BY createdAt').all(me.id,peerId,peerId,me.id);
-    return send(res,200,{messages,peer:{id:peer.id,name:publicName(peer)}});
+    return send(res,200,{messages,peer:{id:peer.id,name:publicName(peer),avatarId:peer.avatarId,photoData:peer.photoData}});
   }
   const userMatch=url.pathname.match(/^\/api\/users\/([a-zA-Z0-9-]{1,60})$/);
   if(req.method==='GET'&&userMatch){
@@ -939,7 +940,7 @@ async function api(req,res,url){
     const min=minInput===null?null:Number(minInput),max=maxInput===null?null:Number(maxInput);
     if((min===null)!==(max===null)||min!==null&&(!Number.isFinite(min)||!Number.isFinite(max)||min<1||max>7||min>max||min*2!==Math.round(min*2)||max*2!==Math.round(max*2)))fail(400,'Укажите диапазон NTRP от 1.0 до 7.0 либо без ограничения');
     const avg=min===null?null:(min+max)/2;
-    const dates=repeatDates(startsAt,b.repeat);if(!validNewStart(dates.at(-1)))fail(400,'Для повтора выберите первую дату минимум за 30 дней до конца периода планирования');
+    const dates=repeatDates(startsAt,b.repeat);if(!validNewStart(dates.at(-1)))fail(400,'Для повтора выберите первую дату минимум за 28 дней до конца периода планирования');
     const id=crypto.randomUUID(),seriesId=b.repeat?id:null;
     db.exec('BEGIN');try{for(const [index,when] of dates.entries())db.prepare('INSERT INTO trainings(id,coach_id,sport,format,seats,court_id,starts_at,duration,avg_ntrp,price,note,created_at,ntrp_min,ntrp_max,requires_approval,friends_only,series_id) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)').run(index?crypto.randomUUID():id,me.id,sport,format,seats,court.id,when,duration,avg,price,str(b.note,240),now(),min,max,b.requiresApproval?1:0,b.friendsOnly?1:0,seriesId);db.exec('COMMIT');}catch(error){db.exec('ROLLBACK');throw error;}
     processTrainingAds();
@@ -1028,7 +1029,7 @@ async function api(req,res,url){
     if(!Number.isFinite(min)||!Number.isFinite(max)||min<1||max>7||max<min||![60,90,120].includes(duration)||!Number.isInteger(price)||price<0||price>100000)fail(400,'Проверьте параметры игры');
     const court=allCourts().find(c=>c.id===b.courtId&&c.sport===sport);if(!court)fail(400,'Выберите корт из списка для этого вида спорта');
     const venue=court.name,city=court.city||'Краснодар';
-    const dates=repeatDates(startsAt,b.repeat);if(!validNewStart(dates.at(-1)))fail(400,'Для повтора выберите первую дату минимум за 30 дней до конца периода планирования');
+    const dates=repeatDates(startsAt,b.repeat);if(!validNewStart(dates.at(-1)))fail(400,'Для повтора выберите первую дату минимум за 28 дней до конца периода планирования');
     const id=crypto.randomUUID(),seriesId=b.repeat?id:null;db.exec('BEGIN');try{
       for(const [index,when] of dates.entries()){
         const occurrenceId=index?crypto.randomUUID():id;
@@ -1036,7 +1037,7 @@ async function api(req,res,url){
         db.prepare('INSERT INTO participants VALUES(?,?,?)').run(occurrenceId,me.id,now());
       }db.exec('COMMIT');
     }catch(e){db.exec('ROLLBACK');throw e;}
-    if(!b.friendsOnly)broadcast(`Новая игра: ${sport==='tennis'?'теннис':'падел'} · ${court.name} · ${new Date(startsAt).toLocaleString('ru-RU',{timeZone:'Europe/Moscow',day:'numeric',month:'short',hour:'2-digit',minute:'2-digit'})}${b.repeat?' · ежедневно 30 дней':''}`,`game_${id}`);
+    if(!b.friendsOnly)broadcast(`Новая игра: ${sport==='tennis'?'теннис':'падел'} · ${court.name} · ${new Date(startsAt).toLocaleString('ru-RU',{timeZone:'Europe/Moscow',day:'numeric',month:'short',hour:'2-digit',minute:'2-digit'})}${b.repeat?' · еженедельно 30 дней':''}`,`game_${id}`);
     else for(const person of db.prepare("SELECT sender_id AS senderId,receiver_id AS receiverId FROM friendships WHERE status='accepted' AND (sender_id=? OR receiver_id=?)").all(me.id,me.id))notifyUser(person.senderId===me.id?person.receiverId:person.senderId,`Новая игра для друзей · ${court.name}`,`game_${id}`);
     return send(res,201,{game:gameDTO(getGame.get(id),me.id),created:dates.length});
   }
