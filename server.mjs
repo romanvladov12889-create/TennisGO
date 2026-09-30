@@ -22,6 +22,8 @@ db.exec(`PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON;
  CREATE TABLE IF NOT EXISTS training_participants(training_id TEXT NOT NULL REFERENCES trainings(id), user_id TEXT NOT NULL REFERENCES users(id), joined_at TEXT NOT NULL, PRIMARY KEY(training_id,user_id));
  CREATE TABLE IF NOT EXISTS training_requests(id TEXT PRIMARY KEY,player_id TEXT NOT NULL REFERENCES users(id),sport TEXT NOT NULL CHECK(sport IN ('tennis','padel')),city TEXT NOT NULL,format TEXT NOT NULL CHECK(format IN ('individual','split','group')),starts_at TEXT NOT NULL,ends_at TEXT NOT NULL,court_ids TEXT NOT NULL,note TEXT NOT NULL,created_at TEXT NOT NULL,cancelled_at TEXT);
  CREATE TABLE IF NOT EXISTS training_request_participants(request_id TEXT NOT NULL REFERENCES training_requests(id),user_id TEXT NOT NULL REFERENCES users(id),joined_at TEXT NOT NULL,PRIMARY KEY(request_id,user_id));
+ CREATE TABLE IF NOT EXISTS friendships(sender_id TEXT NOT NULL REFERENCES users(id),receiver_id TEXT NOT NULL REFERENCES users(id),status TEXT NOT NULL CHECK(status IN ('pending','accepted')),created_at TEXT NOT NULL,accepted_at TEXT,PRIMARY KEY(sender_id,receiver_id),CHECK(sender_id<>receiver_id));
+ CREATE INDEX IF NOT EXISTS friendships_received ON friendships(receiver_id,status);
  CREATE INDEX IF NOT EXISTS training_requests_start ON training_requests(starts_at);
  CREATE TABLE IF NOT EXISTS chat_messages(id TEXT PRIMARY KEY,kind TEXT NOT NULL,listing_id TEXT NOT NULL,sender_id TEXT NOT NULL REFERENCES users(id),peer_id TEXT NOT NULL REFERENCES users(id),body TEXT NOT NULL,created_at TEXT NOT NULL);
  CREATE INDEX IF NOT EXISTS chat_listing ON chat_messages(kind,listing_id,created_at);
@@ -89,6 +91,11 @@ for(const table of ['chat_messages','direct_messages'])if(!db.prepare(`PRAGMA ta
 if(!userColumns.has('blocked_at'))db.exec('ALTER TABLE users ADD COLUMN blocked_at TEXT');
 if(!userColumns.has('blocked_reason'))db.exec('ALTER TABLE users ADD COLUMN blocked_reason TEXT');
 if(!userColumns.has('last_seen_at'))db.exec('ALTER TABLE users ADD COLUMN last_seen_at TEXT');
+for(const table of ['games','trainings']){
+ const columns=new Set(db.prepare(`PRAGMA table_info(${table})`).all().map(x=>x.name));
+ if(!columns.has('friends_only'))db.exec(`ALTER TABLE ${table} ADD COLUMN friends_only INTEGER NOT NULL DEFAULT 0`);
+ if(!columns.has('series_id'))db.exec(`ALTER TABLE ${table} ADD COLUMN series_id TEXT`);
+}
 const newsColumns=new Set(db.prepare('PRAGMA table_info(news)').all().map(column=>column.name));
 if(!newsColumns.has('sport'))db.exec("ALTER TABLE news ADD COLUMN sport TEXT NOT NULL DEFAULT 'all'");
 if(!newsColumns.has('image_path'))db.exec('ALTER TABLE news ADD COLUMN image_path TEXT');
@@ -187,11 +194,12 @@ function processTrainingAds(reference=new Date()){
   const time=reference.getTime(),today=new Intl.DateTimeFormat('en-CA',{timeZone:'Europe/Moscow',year:'numeric',month:'2-digit',day:'2-digit'}).format(reference);
   const trainings=db.prepare('SELECT * FROM trainings WHERE cancelled_at IS NULL AND starts_at>? AND starts_at<? ORDER BY starts_at LIMIT 1000').all(reference.toISOString(),new Date(time+90*86400000).toISOString());
   for(const training of trainings){
+    if(training.series_id&&Date.parse(training.starts_at)-time>86400000)continue;
     const free=training.seats-getTrainingMembers.all(training.id).length;
     if(free<=0)continue;
     const court=allCourts().find(c=>c.id===training.court_id),coach=userDTO(training.coach_id);
     const start=new Date(training.starts_at),remaining=start.getTime()-time,sameDay=new Intl.DateTimeFormat('en-CA',{timeZone:'Europe/Moscow',year:'numeric',month:'2-digit',day:'2-digit'}).format(start)===today;
-    const people=db.prepare("SELECT id,preferred_sports AS sports FROM users WHERE registration_version>=2 AND role='player' AND blocked_at IS NULL AND COALESCE(NULLIF(city,''),'Краснодар')=?").all(court?.city||'Краснодар');
+    const people=db.prepare("SELECT id,preferred_sports AS sports FROM users WHERE registration_version>=2 AND role='player' AND blocked_at IS NULL AND COALESCE(NULLIF(city,''),'Краснодар')=?").all(court?.city||'Краснодар').filter(person=>!training.friends_only||areFriends(training.coach_id,person.id));
     const message=`Есть места на тренировку: ${training.sport==='padel'?'падел':'теннис'} · тренер ${coach?.name||'Тренер'} · ${new Date(training.starts_at).toLocaleString('ru-RU',{timeZone:'Europe/Moscow',day:'numeric',month:'short',hour:'2-digit',minute:'2-digit'})} · ${court?.name||'корт'}, ${court?.address||'адрес уточняется'} · ${training.format==='individual'?'индивидуальная':training.format==='split'?'сплит':'групповая'} · свободно ${free} из ${training.seats} · ${training.price} ₽/чел.`;
     for(const person of people){
       if(person.id===training.coach_id||db.prepare('SELECT 1 FROM training_participants WHERE training_id=? AND user_id=?').get(training.id,person.id)||getRequest.get('training',training.id,person.id)?.status==='pending')continue;
@@ -314,6 +322,12 @@ const addUser = db.prepare('INSERT INTO users(id,name,username,created_at) VALUE
 const saveProfile=db.prepare('UPDATE users SET display_name=?,ntrp_level=?,photo_data=?,role=?,gender=?,playing_years=?,about=?,coach_years=?,coach_courts=?,coach_achievements=?,avatar_id=?,city=?,phone=?,telegram_contact=?,coach_sports=?,registered_at=COALESCE(registered_at,?),registration_version=2 WHERE id=?');
 function userDTO(id){const user=getUser.get(id);if(!user)return null;const {coachSportsRaw,coachCourtsRaw,preferredSportsRaw,...fields}=user;let coachSports=['tennis','padel'],coachCourts=[],preferredSports=[];try{if(coachSportsRaw)coachSports=JSON.parse(coachSportsRaw);if(coachCourtsRaw)coachCourts=JSON.parse(coachCourtsRaw);if(preferredSportsRaw)preferredSports=JSON.parse(preferredSportsRaw);}catch{}const admin=isAdmin(id),club=fields.role==='club'||admin?db.prepare('SELECT name,address,city,phone,sports,status,photo_data AS photoData,surface,opens_at AS opensAt,closes_at AS closesAt,hourly_price AS hourlyPrice FROM clubs WHERE owner_id=?').get(id):null;return {...fields,preferredSports:Array.isArray(preferredSports)?preferredSports:[],coachSports:fields.role==='coach'||admin?(coachSports.length?coachSports:['tennis','padel']):[],coachCourts:(fields.role==='coach'||admin&&fields.role!=='club')&&Array.isArray(coachCourts)?coachCourts:[],coachAchievements:fields.role==='coach'||admin&&fields.role!=='club'?fields.coachAchievements||'':'',club:club?{...club,sports:JSON.parse(club.sports)}:null,isAdmin:admin,ratings:ratingSummary(id)};}
 function isAdmin(id){return !!process.env.ADMIN_TELEGRAM_ID&&id===process.env.ADMIN_TELEGRAM_ID||!process.env.BOT_TOKEN&&!!process.env.ADMIN_DEMO_USER_ID&&id===process.env.ADMIN_DEMO_USER_ID;}
+function publicName(user){if(!user)return 'Игрок';const name=String(user.name||'Игрок').trim();if(user.role!=='player')return name;const parts=name.split(/\s+/);return parts.length>1?`${parts[0]} ${parts[1][0]}.`:parts[0];}
+function areFriends(a,b){return !!db.prepare("SELECT 1 FROM friendships WHERE status='accepted' AND ((sender_id=? AND receiver_id=?) OR (sender_id=? AND receiver_id=?))").get(a,b,b,a);}
+function listingVisible(listing,viewer,kind){if(!listing.friends_only||isAdmin(viewer))return true;const owner=kind==='game'?listing.creator_id:listing.coach_id;if(owner===viewer||areFriends(owner,viewer))return true;return !!db.prepare(kind==='game'?'SELECT 1 FROM participants WHERE game_id=? AND user_id=?':'SELECT 1 FROM training_participants WHERE training_id=? AND user_id=?').get(listing.id,viewer);}
+function requireListing(listing,viewer,kind){if(!listing||!listingVisible(listing,viewer,kind))fail(404,'Объявление не найдено');return listing;}
+function repeatDates(start,repeat){if(repeat!==undefined&&typeof repeat!=='boolean')fail(400,'Проверьте повторение');return Array.from({length:repeat?31:1},(_,i)=>new Date(Date.parse(start)+i*86400000).toISOString());}
+function online(id){const row=db.prepare('SELECT last_seen_at FROM users WHERE id=?').get(id);return !!row?.last_seen_at&&Date.parse(row.last_seen_at)>Date.now()-120000;}
 function audit(adminId,action,targetKind,targetId,detail=''){db.prepare('INSERT INTO moderation_actions VALUES(?,?,?,?,?,?,?)').run(crypto.randomUUID(),adminId,action,targetKind,targetId,detail,now());}
 function clubDetails(b,oldPhoto=null){
   const name=str(b.clubName,100),address=str(b.clubAddress,180),city=str(b.city,80),phone=str(b.clubPhone,30),sports=b.clubSports,photo=b.clubPhotoData??oldPhoto,surface=str(b.clubSurface,40),opensAt=str(b.opensAt,5),closesAt=str(b.closesAt,5),hourlyPrice=Number(b.hourlyPrice);
@@ -327,7 +341,7 @@ function clubDetails(b,oldPhoto=null){
 }
 const getRequest=db.prepare('SELECT status FROM join_requests WHERE kind=? AND listing_id=? AND user_id=?');
 const pendingRequests=db.prepare("SELECT r.user_id AS id,COALESCE(NULLIF(u.display_name,''),u.name) AS name,u.avatar_id AS avatarId,u.photo_data AS photoData FROM join_requests r JOIN users u ON u.id=r.user_id WHERE r.kind=? AND r.listing_id=? AND r.status='pending' ORDER BY r.created_at");
-function requestState(kind,id,viewer,owner){return {requiresApproval:!!owner.requires_approval,requestStatus:getRequest.get(kind,id,viewer)?.status||null,requests:owner.creator_id===viewer||owner.coach_id===viewer?pendingRequests.all(kind,id):[]};}
+function requestState(kind,id,viewer,owner){return {requiresApproval:!!owner.requires_approval,requestStatus:getRequest.get(kind,id,viewer)?.status||null,requests:owner.creator_id===viewer||owner.coach_id===viewer?pendingRequests.all(kind,id).map(u=>({...u,name:publicName(userDTO(u.id))})):[]};}
 const getGame = db.prepare('SELECT * FROM games WHERE id=?');
 const getMembers = db.prepare("SELECT u.id,COALESCE(NULLIF(u.display_name,''),u.name) AS name,u.avatar_id AS avatarId,u.photo_data AS photoData FROM participants p JOIN users u ON p.user_id=u.id WHERE p.game_id=? ORDER BY p.joined_at,p.rowid");
 const getTraining=db.prepare('SELECT * FROM trainings WHERE id=?');
@@ -356,10 +370,10 @@ function authenticate(req){
   let name='Игрок';try{name=decodeURIComponent(String(req.headers['x-demo-name']||'Игрок')).slice(0,60).trim()||'Игрок';}catch{}
   return {id,name,username:''};
 }
-function gameDTO(game,viewer){const members=getMembers.all(game.id).map((m,i)=>({...m,team:i%2===0?'A':'B'})),court=allCourts().find(c=>c.id===game.court_id),creator=userDTO(game.creator_id),doubles=game.seats===4;const confirmations=doubles?db.prepare('SELECT user_id AS userId,phase FROM match_confirmations WHERE game_id=?').all(game.id):[];return {id:game.id,sport:game.sport,city:game.city,venue:game.venue,courtId:game.court_id,courtAddress:court?.address||'',startsAt:game.starts_at,duration:game.duration,levelMin:game.level_min,levelMax:game.level_max,seats:game.seats,price:game.price,kind:game.kind,note:game.note,courtReserved:!!game.court_reserved,creatorId:game.creator_id,creatorName:creator?.name||'Организатор',creatorAvatarId:creator?.avatarId||null,creatorPhotoData:creator?.photoData||null,creatorGender:creator?.gender||null,creatorNtrp:creator?.ntrpLevel??null,creatorRole:creator?.role||null,opponentGender:game.opponent_gender,cancelled:!!game.cancelled_at,members,joined:members.some(m=>m.id===viewer),result:game.result,resultBy:game.result_by,resultConfirmed:!!game.result_confirmed,resultDisputed:!!game.result_disputed_at,resultDisputeReason:game.result_dispute_reason||null,attendanceBy:game.attendance_by,attendanceDone:doubles?confirmations.some(c=>c.userId===viewer&&c.phase==='attendance'):game.attendance_by===viewer||!!game.attendance_confirmed_at&&members.some(m=>m.id===viewer),attendanceCount:doubles?confirmations.filter(c=>c.phase==='attendance').length:(game.attendance_confirmed_at?2:game.attendance_at?1:0),attendanceConfirmed:doubles?confirmations.filter(c=>c.phase==='attendance').length===4:!!game.attendance_confirmed_at,resultAcknowledged:doubles?confirmations.some(c=>c.userId===viewer&&c.phase==='result'):false,resultConfirmationCount:doubles?confirmations.filter(c=>c.phase==='result').length:(game.result_confirmed?2:game.result?1:0),absenceBy:game.absence_by,absenceReason:game.absence_reason,absenceDisputed:!!game.absence_disputed_at,courtType:court?.courtType||null,voteStatus:db.prepare('SELECT status FROM match_polls WHERE game_id=?').get(game.id)?.status||null,myVote:db.prepare('SELECT choice FROM match_votes WHERE game_id=? AND user_id=?').get(game.id,viewer)?.choice||null,voteCount:db.prepare('SELECT COUNT(*) AS n FROM match_votes WHERE game_id=?').get(game.id).n,...requestState('game',game.id,viewer,game)};}
-function trainingDTO(training,viewer){const coach=userDTO(training.coach_id),members=getTrainingMembers.all(training.id),court=allCourts().find(c=>c.id===training.court_id),viewerRole=userDTO(viewer)?.role;return {id:training.id,sport:training.sport||'tennis',city:court?.city||'Краснодар',coachId:training.coach_id,coachName:coach?.name||'Тренер',coachGender:coach?.gender||null,coachYears:coach?.coachYears??null,coachAvatarId:coach?.avatarId||null,coachPhotoData:coach?.photoData||null,format:training.format,seats:training.seats,courtId:training.court_id,courtName:court?.name||'',courtAddress:court?.address||'',courtType:court?.courtType||null,startsAt:training.starts_at,duration:training.duration,ntrpMin:training.ntrp_min,ntrpMax:training.ntrp_max,price:viewerRole==='coach'&&training.coach_id!==viewer&&!isAdmin(viewer)?null:training.price,note:training.note,cancelled:!!training.cancelled_at,completed:!!db.prepare('SELECT 1 FROM completed_trainings WHERE training_id=?').get(training.id),reviewed:!!db.prepare('SELECT 1 FROM training_reviews WHERE training_id=? AND user_id=?').get(training.id,viewer),members,joined:members.some(m=>m.id===viewer),...requestState('training',training.id,viewer,training)};}
-function requestMembers(request){const owner=userDTO(request.player_id),extra=db.prepare("SELECT u.id,COALESCE(NULLIF(u.display_name,''),u.name) AS name,u.avatar_id AS avatarId,u.photo_data AS photoData FROM training_request_participants p JOIN users u ON u.id=p.user_id WHERE p.request_id=? ORDER BY p.joined_at").all(request.id);return [{id:request.player_id,name:owner?.name||'Игрок',avatarId:owner?.avatarId||null,photoData:owner?.photoData||null},...extra];}
-function trainingRequestDTO(request,viewer=null){const owner=userDTO(request.player_id),courtIds=JSON.parse(request.court_ids),all=allCourts(),members=requestMembers(request);return {id:request.id,playerId:request.player_id,playerName:owner?.name||'Игрок',playerAvatarId:owner?.avatarId||null,playerPhotoData:owner?.photoData||null,playerNtrp:owner?.ntrpLevel??null,sport:request.sport,city:request.city,format:request.format,seats:request.seats||({individual:1,split:2,group:6})[request.format],members,joined:members.some(m=>m.id===viewer),startsAt:request.starts_at,endsAt:request.ends_at,courts:courtIds.map(id=>all.find(c=>c.id===id)).filter(Boolean).map(c=>({id:c.id,name:c.name,address:c.address})),note:request.note,createdAt:request.created_at};}
+function gameDTO(game,viewer){const members=getMembers.all(game.id).map((m,i)=>({...m,name:publicName(userDTO(m.id)),team:i%2===0?'A':'B'})),court=allCourts().find(c=>c.id===game.court_id),creator=userDTO(game.creator_id),doubles=game.seats===4;const confirmations=doubles?db.prepare('SELECT user_id AS userId,phase FROM match_confirmations WHERE game_id=?').all(game.id):[];return {id:game.id,sport:game.sport,city:game.city,venue:game.venue,courtId:game.court_id,courtAddress:court?.address||'',startsAt:game.starts_at,duration:game.duration,levelMin:game.level_min,levelMax:game.level_max,seats:game.seats,price:game.price,kind:game.kind,note:game.note,courtReserved:!!game.court_reserved,friendsOnly:!!game.friends_only,seriesId:game.series_id||null,creatorId:game.creator_id,creatorName:publicName(creator),creatorAvatarId:creator?.avatarId||null,creatorPhotoData:creator?.photoData||null,creatorGender:creator?.gender||null,creatorNtrp:creator?.ntrpLevel??null,creatorRole:creator?.role||null,opponentGender:game.opponent_gender,cancelled:!!game.cancelled_at,members,joined:members.some(m=>m.id===viewer),result:game.result,resultBy:game.result_by,resultConfirmed:!!game.result_confirmed,resultDisputed:!!game.result_disputed_at,resultDisputeReason:game.result_dispute_reason||null,attendanceBy:game.attendance_by,attendanceDone:doubles?confirmations.some(c=>c.userId===viewer&&c.phase==='attendance'):game.attendance_by===viewer||!!game.attendance_confirmed_at&&members.some(m=>m.id===viewer),attendanceCount:doubles?confirmations.filter(c=>c.phase==='attendance').length:(game.attendance_confirmed_at?2:game.attendance_at?1:0),attendanceConfirmed:doubles?confirmations.filter(c=>c.phase==='attendance').length===4:!!game.attendance_confirmed_at,resultAcknowledged:doubles?confirmations.some(c=>c.userId===viewer&&c.phase==='result'):false,resultConfirmationCount:doubles?confirmations.filter(c=>c.phase==='result').length:(game.result_confirmed?2:game.result?1:0),absenceBy:game.absence_by,absenceReason:game.absence_reason,absenceDisputed:!!game.absence_disputed_at,courtType:court?.courtType||null,voteStatus:db.prepare('SELECT status FROM match_polls WHERE game_id=?').get(game.id)?.status||null,myVote:db.prepare('SELECT choice FROM match_votes WHERE game_id=? AND user_id=?').get(game.id,viewer)?.choice||null,voteCount:db.prepare('SELECT COUNT(*) AS n FROM match_votes WHERE game_id=?').get(game.id).n,...requestState('game',game.id,viewer,game)};}
+function trainingDTO(training,viewer){const coach=userDTO(training.coach_id),members=getTrainingMembers.all(training.id).map(m=>({...m,name:publicName(userDTO(m.id))})),court=allCourts().find(c=>c.id===training.court_id),viewerRole=userDTO(viewer)?.role;return {id:training.id,sport:training.sport||'tennis',city:court?.city||'Краснодар',coachId:training.coach_id,coachName:publicName(coach),coachGender:coach?.gender||null,coachYears:coach?.coachYears??null,coachAvatarId:coach?.avatarId||null,coachPhotoData:coach?.photoData||null,format:training.format,seats:training.seats,friendsOnly:!!training.friends_only,seriesId:training.series_id||null,courtId:training.court_id,courtName:court?.name||'',courtAddress:court?.address||'',courtType:court?.courtType||null,startsAt:training.starts_at,duration:training.duration,ntrpMin:training.ntrp_min,ntrpMax:training.ntrp_max,price:viewerRole==='coach'&&training.coach_id!==viewer&&!isAdmin(viewer)?null:training.price,note:training.note,cancelled:!!training.cancelled_at,completed:!!db.prepare('SELECT 1 FROM completed_trainings WHERE training_id=?').get(training.id),reviewed:!!db.prepare('SELECT 1 FROM training_reviews WHERE training_id=? AND user_id=?').get(training.id,viewer),members,joined:members.some(m=>m.id===viewer),...requestState('training',training.id,viewer,training)};}
+function requestMembers(request){const owner=userDTO(request.player_id),extra=db.prepare("SELECT u.id,COALESCE(NULLIF(u.display_name,''),u.name) AS name,u.avatar_id AS avatarId,u.photo_data AS photoData FROM training_request_participants p JOIN users u ON u.id=p.user_id WHERE p.request_id=? ORDER BY p.joined_at").all(request.id);return [{id:request.player_id,name:publicName(owner),avatarId:owner?.avatarId||null,photoData:owner?.photoData||null},...extra.map(m=>({...m,name:publicName(userDTO(m.id))}))];}
+function trainingRequestDTO(request,viewer=null){const owner=userDTO(request.player_id),courtIds=JSON.parse(request.court_ids),all=allCourts(),members=requestMembers(request);return {id:request.id,playerId:request.player_id,playerName:publicName(owner),playerAvatarId:owner?.avatarId||null,playerPhotoData:owner?.photoData||null,playerNtrp:owner?.ntrpLevel??null,sport:request.sport,city:request.city,format:request.format,seats:request.seats||({individual:1,split:2,group:6})[request.format],members,joined:members.some(m=>m.id===viewer),startsAt:request.starts_at,endsAt:request.ends_at,courts:courtIds.map(id=>all.find(c=>c.id===id)).filter(Boolean).map(c=>({id:c.id,name:c.name,address:c.address})),note:request.note,createdAt:request.created_at};}
 async function body(req,maxLength=16384){let raw='';for await(const chunk of req){raw+=chunk;if(raw.length>maxLength)fail(413,'Слишком большой запрос');}try{return JSON.parse(raw||'{}');}catch{fail(400,'Неверный JSON');}}
 function str(v,max=100){return typeof v==='string'?v.trim().slice(0,max):'';}
 function date(v){const n=Date.parse(v);if(!Number.isFinite(n))fail(400,'Неверная дата');return new Date(n).toISOString();}
@@ -381,7 +395,7 @@ async function weatherHours(city='Краснодар'){
  weatherPending.set(city,pending);try{return await pending;}finally{weatherPending.delete(city);}
 }
 async function api(req,res,url){
-  if(url.pathname==='/api/config')return send(res,200,{demo:!process.env.BOT_TOKEN,botUsername:process.env.BOT_USERNAME||'',cities,version:'0.23.1'});
+  if(url.pathname==='/api/config')return send(res,200,{demo:!process.env.BOT_TOKEN,botUsername:process.env.BOT_USERNAME||'',cities,version:'0.24.0'});
   if(req.method==='GET'&&url.pathname==='/api/weather'){const city=url.searchParams.get('city')||'Краснодар';if(!cities.includes(city))fail(400,'Выберите город из списка');const hours=await weatherHours(city);return send(res,200,{hours,status:weatherCaches.get(city).status,city,source:'Open-Meteo'});}
   const identity=authenticate(req);addUser.run(identity.id,identity.name,identity.username,now());
   const me=userDTO(identity.id);
@@ -452,6 +466,7 @@ async function api(req,res,url){
       return send(res,200,{user:userDTO(me.id)});
     }
     if(!['player','coach'].includes(b.role))fail(400,'Выберите роль: игрок или тренер');
+    if((!me.registered||me.role!=='coach'&&b.role==='coach')&&!/^[^\s]+\s+[^\s]+/.test(name))fail(400,'Укажите имя и фамилию');
     if(!['male','female'].includes(b.gender))fail(400,'Укажите пол');
     const years=Number(b.playingYears),coachYears=b.role==='coach'||isAdmin(me.id)?b.coachYears==null?null:Number(b.coachYears):null;
     if(!Number.isInteger(years)||years<0||years>80)fail(400,'Укажите стаж игры в годах');
@@ -462,6 +477,7 @@ async function api(req,res,url){
     if(!cities.includes(city))fail(400,'Выберите город из списка');
     if(phone&&(!/^[+\d()\-\s]+$/.test(phone)||phone.replace(/\D/g,'').length<10||phone.replace(/\D/g,'').length>15))fail(400,'Проверьте номер телефона');
     if(telegramContact&&!/^[a-zA-Z][a-zA-Z0-9_]{4,31}$/.test(telegramContact))fail(400,'Укажите Telegram username без ссылки');
+    if((!me.registered||me.role!=='coach'&&b.role==='coach')&&(!phone||b.role==='coach'&&!telegramContact))fail(400,b.role==='coach'?'Укажите телефон и Telegram тренера':'Укажите телефон для бронирования кортов');
     const coachSports=b.role==='coach'||isAdmin(me.id)?(b.coachSports===undefined?['tennis','padel']:b.coachSports):[];
     if(!Array.isArray(coachSports)||b.role==='coach'&&coachSports.length===0||coachSports.length>2||coachSports.some(s=>!['tennis','padel'].includes(s))||new Set(coachSports).size!==coachSports.length)fail(400,'Выберите теннис, падел или оба вида спорта');
     const coachCourts=b.role==='coach'||isAdmin(me.id)?b.coachCourts??[]:[];
@@ -631,7 +647,7 @@ async function api(req,res,url){
     const end=new Date(`${nextYear}-${String(nextMonth).padStart(2,'0')}-01T00:00:00+03:00`);
     const rows=db.prepare("SELECT u.id,COALESCE(NULLIF(u.display_name,''),u.name) AS name,u.avatar_id AS avatarId,u.photo_data AS photoData,COUNT(*) AS games FROM participants p JOIN games g ON g.id=p.game_id JOIN users u ON u.id=p.user_id WHERE g.kind='rating' AND g.result_confirmed=1 AND g.cancelled_at IS NULL AND g.starts_at>=? AND g.starts_at<? AND u.registration_version>=2 GROUP BY p.user_id ORDER BY games DESC,MIN(g.starts_at),u.id LIMIT 3").all(start.toISOString(),end.toISOString());
     const mine=db.prepare("SELECT COUNT(*) AS games FROM participants p JOIN games g ON g.id=p.game_id WHERE p.user_id=? AND g.kind='rating' AND g.result_confirmed=1 AND g.cancelled_at IS NULL AND g.starts_at>=? AND g.starts_at<?").get(me.id,start.toISOString(),end.toISOString()).games;
-    return send(res,200,{title:`Игровой марафон · ${new Intl.DateTimeFormat('ru-RU',{month:'long',year:'numeric',timeZone:'Europe/Moscow'}).format(start)}`,month:`${year}-${String(month).padStart(2,'0')}`,goal:20,games:mine,leaders:rows,earned:mine>=20});
+    return send(res,200,{title:`Игровой марафон · ${new Intl.DateTimeFormat('ru-RU',{month:'long',year:'numeric',timeZone:'Europe/Moscow'}).format(start)}`,month:`${year}-${String(month).padStart(2,'0')}`,goal:20,games:mine,leaders:rows.map(row=>({...row,name:publicName(userDTO(row.id))})),earned:mine>=20});
   }
   if(req.method==='GET'&&url.pathname==='/api/court-bookings'){
     const rows=db.prepare("SELECT r.id,r.sport,r.starts_at AS startsAt,r.duration,c.name AS clubName,c.address,c.city FROM court_reservations r JOIN clubs c ON c.owner_id=r.club_id WHERE r.user_id=? AND r.cancelled_at IS NULL ORDER BY r.starts_at").all(me.id);
@@ -672,19 +688,43 @@ async function api(req,res,url){
   if(req.method==='GET'&&url.pathname==='/api/leaderboard'){
     const sport=url.searchParams.get('sport')||'tennis';if(!['tennis','padel'].includes(sport))fail(400,'Выберите вид спорта');
     const players=db.prepare("SELECT u.id,COALESCE(NULLIF(u.display_name,''),u.name) AS name,COALESCE(NULLIF(u.city,''),'Краснодар') AS city,u.avatar_id AS avatarId,u.photo_data AS photoData,r.rating,r.matches,r.wins,r.losses FROM player_ratings r JOIN users u ON u.id=r.user_id WHERE r.sport=? AND r.matches>0 AND u.registration_version>=2 AND u.role='player' ORDER BY r.rating DESC,r.matches DESC LIMIT 100").all(sport);
-    return send(res,200,{sport,players});
+    return send(res,200,{sport,players:players.map(p=>({...p,name:publicName({...p,role:'player'})}))});
   }
   if(req.method==='GET'&&url.pathname==='/api/users'){
     const search=str(url.searchParams.get('q'),80),offset=Math.min(10000,Math.max(0,Number(url.searchParams.get('offset'))||0)),role=url.searchParams.get('role');
     if(role!==null&&role!=='coach')fail(400,'Неизвестный фильтр пользователей');
-    const ids=db.prepare("SELECT id,COALESCE(NULLIF(display_name,''),name) AS name FROM users WHERE registration_version>=2 AND blocked_at IS NULL AND id<>? AND (? IS NULL OR role=?) ORDER BY COALESCE(NULLIF(display_name,''),name),id").all(me.id,role,role).filter(row=>row.name.toLocaleLowerCase('ru-RU').includes(search.toLocaleLowerCase('ru-RU'))).slice(offset,offset+31);
-    return send(res,200,{users:ids.slice(0,30).map(({id})=>{const {name,role,city,avatarId,photoData,ntrpLevel,coachSports,coachYears,coachCourts,coachAchievements}=userDTO(id);return {id,name,role,city,avatarId,photoData,ntrpLevel,coachSports,coachYears,coachCourts,coachAchievements};}),hasMore:ids.length>30});
+    const ids=db.prepare("SELECT id,COALESCE(NULLIF(display_name,''),name) AS name FROM users WHERE registration_version>=2 AND blocked_at IS NULL AND id<>? AND (? IS NULL OR role=?) ORDER BY COALESCE(NULLIF(display_name,''),name),id").all(me.id,role,role).filter(row=>publicName(userDTO(row.id)).toLocaleLowerCase('ru-RU').includes(search.toLocaleLowerCase('ru-RU'))).slice(offset,offset+31);
+    return send(res,200,{users:ids.slice(0,30).map(({id})=>{const u=userDTO(id);const {role,city,avatarId,photoData,ntrpLevel,coachSports,coachYears,coachCourts,coachAchievements}=u;return {id,name:publicName(u),role,city,avatarId,photoData,ntrpLevel,coachSports,coachYears,coachCourts,coachAchievements,online:online(id),friend:areFriends(me.id,id)};}),hasMore:ids.length>30});
+  }
+  if(req.method==='GET'&&url.pathname==='/api/presence'){
+    const rows=db.prepare("SELECT id FROM users WHERE registration_version>=2 AND blocked_at IS NULL AND role IN ('player','coach') AND id<>? AND last_seen_at>? ORDER BY last_seen_at DESC LIMIT 40").all(me.id,new Date(Date.now()-120000).toISOString());
+    return send(res,200,{users:rows.map(row=>{const u=userDTO(row.id);return {id:u.id,name:publicName(u),role:u.role,city:u.city,avatarId:u.avatarId,photoData:u.photoData,online:true};})});
+  }
+  if(req.method==='GET'&&url.pathname==='/api/friends'){
+    const rows=db.prepare("SELECT sender_id AS senderId,receiver_id AS receiverId,status FROM friendships WHERE sender_id=? OR receiver_id=? ORDER BY created_at DESC").all(me.id,me.id);
+    return send(res,200,{accepted:rows.filter(x=>x.status==='accepted').map(x=>{const id=x.senderId===me.id?x.receiverId:x.senderId,u=userDTO(id);return {id,name:publicName(u),avatarId:u?.avatarId,photoData:u?.photoData,online:online(id)};}),incoming:rows.filter(x=>x.status==='pending'&&x.receiverId===me.id).map(x=>{const u=userDTO(x.senderId);return {id:x.senderId,name:publicName(u),avatarId:u?.avatarId,photoData:u?.photoData};}),outgoing:rows.filter(x=>x.status==='pending'&&x.senderId===me.id).map(x=>({id:x.receiverId}))});
+  }
+  const friendPath=url.pathname.match(/^\/api\/friends\/([a-zA-Z0-9-]{1,60})(?:\/(accept|decline))?$/);
+  if(friendPath){
+    const peerId=friendPath[1],peer=userDTO(peerId),action=friendPath[2];if(!peer?.registered||peer.blockedAt||peer.role==='club'||peerId===me.id)fail(404,'Участник не найден');
+    if(req.method==='POST'&&!action){
+      if(db.prepare('SELECT 1 FROM friendships WHERE (sender_id=? AND receiver_id=?) OR (sender_id=? AND receiver_id=?)').get(me.id,peerId,peerId,me.id))fail(409,'Запрос в друзья уже существует');
+      db.prepare("INSERT INTO friendships(sender_id,receiver_id,status,created_at) VALUES(?,?,'pending',?)").run(me.id,peerId,now());notifyUser(peerId,`${publicName(me)} предлагает дружбу`);return send(res,201,{status:'pending'});
+    }
+    if(req.method==='POST'&&action){
+      const request=db.prepare("SELECT 1 FROM friendships WHERE sender_id=? AND receiver_id=? AND status='pending'").get(peerId,me.id);if(!request)fail(404,'Запрос в друзья не найден');
+      if(action==='accept'){db.prepare("UPDATE friendships SET status='accepted',accepted_at=? WHERE sender_id=? AND receiver_id=?").run(now(),peerId,me.id);notifyUser(peerId,`${publicName(me)} принял приглашение в друзья`);}
+      else db.prepare('DELETE FROM friendships WHERE sender_id=? AND receiver_id=?').run(peerId,me.id);
+      return send(res,200,{status:action==='accept'?'accepted':'declined'});
+    }
+    if(req.method==='DELETE'&&!action){const changed=db.prepare('DELETE FROM friendships WHERE (sender_id=? AND receiver_id=?) OR (sender_id=? AND receiver_id=?)').run(me.id,peerId,peerId,me.id);if(!changed.changes)fail(404,'Пользователь не в друзьях');return send(res,200,{removed:true});}
   }
   const joinDecision=url.pathname.match(/^\/api\/(games|trainings)\/([a-f0-9-]{36})\/requests\/([a-zA-Z0-9-]{1,60})\/(approve|reject)$/i);
   if(req.method==='POST'&&joinDecision){
     const [,group,id,userId,decision]=joinDecision,kind=group==='games'?'game':'training',listing=kind==='game'?getGame.get(id):getTraining.get(id);
     if(!listing)fail(404,'Объявление не найдено');
     if((kind==='game'?listing.creator_id:listing.coach_id)!==me.id)fail(403,'Только организатор может решать по заявкам');
+    if(listing.friends_only&&!areFriends(me.id,userId))fail(403,'Участник больше не входит в список друзей');
     if(kind==='game'&&!listing.requires_approval||listing.cancelled_at||Date.parse(listing.starts_at)<=Date.now())fail(409,'Приём заявок закрыт');
     if(getRequest.get(kind,id,userId)?.status!=='pending')fail(409,'Заявка уже обработана или отменена');
     if(decision==='approve'){
@@ -708,7 +748,7 @@ async function api(req,res,url){
     for(const m of listingMessages){const other=m.senderId===me.id?m.peerId:m.senderId;add(`${m.kind}:${m.listingId}:${other}`,m.kind,m.listingId,other,m);}
     const directMessages=db.prepare('SELECT sender_id AS senderId,recipient_id AS peerId,body,created_at AS createdAt,read_at AS readAt FROM direct_messages WHERE deleted_at IS NULL AND (sender_id=? OR recipient_id=?) ORDER BY created_at').all(me.id,me.id);
     for(const m of directMessages){const other=m.senderId===me.id?m.peerId:m.senderId;add(`direct:${other}`,'direct',null,other,m);}
-    const threads=[...conversations.values()].map(t=>{const u=userDTO(t.peerId),listing=t.kind==='game'?getGame.get(t.listingId):t.kind==='training'?getTraining.get(t.listingId):null;return {...t,peerName:u?.name||'Пользователь',peerAvatarId:u?.avatarId||null,peerPhotoData:u?.photoData||null,title:t.kind==='game'?`Игра · ${listing?.venue||''}`:t.kind==='training'?`Тренировка · ${allCourts().find(c=>c.id===listing?.court_id)?.name||''}`:'Личный чат'};}).sort((a,b)=>b.lastAt.localeCompare(a.lastAt));
+    const threads=[...conversations.values()].map(t=>{const u=userDTO(t.peerId),listing=t.kind==='game'?getGame.get(t.listingId):t.kind==='training'?getTraining.get(t.listingId):null;return {...t,peerName:publicName(u),peerAvatarId:u?.avatarId||null,peerPhotoData:u?.photoData||null,title:t.kind==='game'?`Игра · ${listing?.venue||''}`:t.kind==='training'?`Тренировка · ${allCourts().find(c=>c.id===listing?.court_id)?.name||''}`:'Личный чат'};}).sort((a,b)=>b.lastAt.localeCompare(a.lastAt));
     return send(res,200,{threads,unread:threads.reduce((n,t)=>n+t.unread,0)});
   }
   const directMatch=url.pathname.match(/^\/api\/direct\/([a-zA-Z0-9-]{1,60})$/);
@@ -719,29 +759,29 @@ async function api(req,res,url){
       const recent=db.prepare('SELECT COUNT(*) AS n FROM direct_messages WHERE sender_id=? AND created_at>?').get(me.id,new Date(Date.now()-60000).toISOString()).n;
       if(recent>=10)fail(429,'Слишком много сообщений. Подождите минуту');
       db.prepare('INSERT INTO direct_messages(id,sender_id,recipient_id,body,created_at,read_at) VALUES(?,?,?,?,?,?)').run(crypto.randomUUID(),me.id,peerId,message,now(),null);
-      notifyUser(peerId,`${me.name}: новое личное сообщение`);
+      notifyUser(peerId,`${publicName(me)}: новое личное сообщение`);
     }
     db.prepare('UPDATE direct_messages SET read_at=? WHERE recipient_id=? AND sender_id=? AND read_at IS NULL AND deleted_at IS NULL').run(now(),me.id,peerId);
     const messages=db.prepare('SELECT * FROM (SELECT id,sender_id AS senderId,body,created_at AS createdAt FROM direct_messages WHERE deleted_at IS NULL AND ((sender_id=? AND recipient_id=?) OR (sender_id=? AND recipient_id=?)) ORDER BY created_at DESC LIMIT 100) ORDER BY createdAt').all(me.id,peerId,peerId,me.id);
-    return send(res,200,{messages,peer:{id:peer.id,name:peer.name}});
+    return send(res,200,{messages,peer:{id:peer.id,name:publicName(peer)}});
   }
   const userMatch=url.pathname.match(/^\/api\/users\/([a-zA-Z0-9-]{1,60})$/);
   if(req.method==='GET'&&userMatch){
     const user=userDTO(userMatch[1]);if(!user?.registered)fail(404,'Профиль не найден');
-    const {id,name,role,gender,playingYears,ntrpLevel,coachYears,coachCourts,coachAchievements,about,avatarId,photoData,city,phone,telegramContact,coachSports,ratings}=user;
+    const {id,role,gender,playingYears,ntrpLevel,coachYears,coachCourts,coachAchievements,about,avatarId,photoData,city,phone,telegramContact,coachSports,ratings}=user;
     const reviews=role==='coach'?db.prepare('SELECT score,body,created_at AS createdAt FROM training_reviews WHERE coach_id=? ORDER BY created_at DESC LIMIT 30').all(id):[];
-    return send(res,200,{user:{id,name,role,gender,playingYears,ntrpLevel,coachYears,coachCourts,coachAchievements,about,avatarId,photoData,city,phone,telegramContact,coachSports,ratings,reviews}});
+    const relation=db.prepare('SELECT sender_id AS senderId,status FROM friendships WHERE (sender_id=? AND receiver_id=?) OR (sender_id=? AND receiver_id=?)').get(me.id,id,id,me.id);
+    return send(res,200,{user:{id,name:publicName(user),role,gender,playingYears,ntrpLevel,coachYears,coachCourts,coachAchievements,about,avatarId,photoData,city,phone:role==='coach'?phone:null,telegramContact:role==='coach'?telegramContact:null,coachSports,ratings,reviews,online:online(id),friendStatus:relation?.status||null,friendDirection:relation?.senderId===me.id?'outgoing':'incoming'}});
   }
   if(req.method==='GET'&&url.pathname==='/api/catalog')return send(res,200,{coaches,courts:allCourts()});
   const chatPath=url.pathname.match(/^\/api\/chats\/(game|training)\/([a-f0-9-]{36})(?:\/([a-zA-Z0-9-]{1,60}))?$/i);
   if(chatPath&&['GET','POST'].includes(req.method)){
-    const [,kind,id,peerId]=chatPath,listing=kind==='game'?getGame.get(id):getTraining.get(id);
-    if(!listing)fail(404,'Объявление не найдено');
+    const [,kind,id,peerId]=chatPath,listing=requireListing(kind==='game'?getGame.get(id):getTraining.get(id),me.id,kind);
     const authorId=kind==='game'?listing.creator_id:listing.coach_id;
     if(!peerId){
       if(req.method!=='GET'||me.id!==authorId)fail(403,'Список диалогов доступен автору');
       const ids=db.prepare('SELECT DISTINCT CASE WHEN sender_id=? THEN peer_id ELSE sender_id END AS id FROM chat_messages WHERE deleted_at IS NULL AND kind=? AND listing_id=? AND (sender_id=? OR peer_id=?)').all(me.id,kind,id,me.id,me.id);
-      return send(res,200,{threads:ids.map(row=>{const u=userDTO(row.id);return {id:row.id,name:u?.name||'Участник',avatarId:u?.avatarId||null,photoData:u?.photoData||null};})});
+      return send(res,200,{threads:ids.map(row=>{const u=userDTO(row.id);return {id:row.id,name:publicName(u),avatarId:u?.avatarId||null,photoData:u?.photoData||null};})});
     }
     if(me.id===peerId||!userDTO(peerId)?.registered||userDTO(peerId)?.blockedAt)fail(404,'Собеседник не найден');
     if(me.id!==authorId&&peerId!==authorId)fail(403,'Написать можно автору объявления');
@@ -756,7 +796,7 @@ async function api(req,res,url){
       const recent=db.prepare('SELECT COUNT(*) AS n FROM chat_messages WHERE sender_id=? AND created_at>?').get(me.id,new Date(Date.now()-60000).toISOString()).n;
       if(recent>=10)fail(429,'Слишком много сообщений. Подождите минуту');
       db.prepare('INSERT INTO chat_messages(id,kind,listing_id,sender_id,peer_id,body,created_at) VALUES(?,?,?,?,?,?,?)').run(crypto.randomUUID(),kind,id,me.id,peerId,message,now());
-      notifyUser(peerId,`${me.name}: сообщение по объявлению`);
+      notifyUser(peerId,`${publicName(me)}: сообщение по объявлению`);
     }
     db.prepare('UPDATE chat_messages SET read_at=? WHERE kind=? AND listing_id=? AND sender_id=? AND peer_id=? AND read_at IS NULL AND deleted_at IS NULL').run(now(),kind,id,peerId,me.id);
     const messages=db.prepare('SELECT * FROM (SELECT id,sender_id AS senderId,body,created_at AS createdAt FROM chat_messages WHERE deleted_at IS NULL AND kind=? AND listing_id=? AND sender_id IN (?,?) AND peer_id IN (?,?) ORDER BY created_at DESC LIMIT 100) ORDER BY createdAt').all(kind,id,me.id,peerId,me.id,peerId);
@@ -804,7 +844,7 @@ async function api(req,res,url){
       }catch{return false;}
     });
     const dateLabel=new Date(startsAt).toLocaleDateString('ru-RU',{timeZone:'Europe/Moscow',day:'numeric',month:'short'}),from=new Date(startsAt).toLocaleTimeString('ru-RU',{timeZone:'Europe/Moscow',hour:'2-digit',minute:'2-digit'}),to=new Date(endsAt).toLocaleTimeString('ru-RU',{timeZone:'Europe/Moscow',hour:'2-digit',minute:'2-digit'});
-    const message=`Игрок ${me.name} ищет ${format==='individual'?'индивидуальную тренировку':format==='split'?'сплит':'групповую тренировку'} · ${sport==='tennis'?'теннис':'падел'} · ${city} · ${dateLabel}, ${from}–${to} · ${selected.map(c=>c.name).join(', ')}`;
+    const message=`Игрок ${publicName(me)} ищет ${format==='individual'?'индивидуальную тренировку':format==='split'?'сплит':'групповую тренировку'} · ${sport==='tennis'?'теннис':'падел'} · ${city} · ${dateLabel}, ${from}–${to} · ${selected.map(c=>c.name).join(', ')}`;
     db.exec('BEGIN');try{
       db.prepare('INSERT INTO training_requests(id,player_id,sport,city,format,starts_at,ends_at,court_ids,note,created_at,seats) VALUES(?,?,?,?,?,?,?,?,?,?,?)').run(id,me.id,sport,city,format,startsAt,endsAt,JSON.stringify(ids),note,now(),seats);
       for(const person of recipients)notifyUser(person.id,message,`training_request_${id}`);
@@ -842,11 +882,11 @@ async function api(req,res,url){
         if(existing)fail(409,'Вы уже присоединились');
         if(requestMembers(current).length>=current.seats)fail(409,'Свободных мест в заявке нет');
         db.prepare('INSERT INTO training_request_participants VALUES(?,?,?)').run(request.id,me.id,now());
-        notifyUser(request.player_id,`${me.name} присоединился к вашей заявке на ${request.format==='split'?'сплит':'групповую тренировку'}`,`training_request_${request.id}`);
+        notifyUser(request.player_id,`${publicName(me)} присоединился к вашей заявке на ${request.format==='split'?'сплит':'групповую тренировку'}`,`training_request_${request.id}`);
       }else{
         if(!existing)fail(409,'Вы не участвуете в заявке');
         db.prepare('DELETE FROM training_request_participants WHERE request_id=? AND user_id=?').run(request.id,me.id);
-        notifyUser(request.player_id,`${me.name} вышел из заявки на тренировку`,`training_request_${request.id}`);
+        notifyUser(request.player_id,`${publicName(me)} вышел из заявки на тренировку`,`training_request_${request.id}`);
       }
       db.exec('COMMIT');
     }catch(error){db.exec('ROLLBACK');throw error;}
@@ -874,7 +914,7 @@ async function api(req,res,url){
       db.prepare('INSERT INTO trainings(id,coach_id,sport,format,seats,court_id,starts_at,duration,avg_ntrp,price,note,created_at,ntrp_min,ntrp_max,requires_approval) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)').run(id,me.id,request.sport,request.format,seats,court.id,start,duration,null,price,request.note,now(),null,null,1);
       for(const member of members){
         db.prepare('INSERT INTO training_participants VALUES(?,?,?)').run(id,member.id,now());
-        notifyUser(member.id,`Тренер ${me.name} подтвердил вашу тренировку · ${court.name} · ${new Date(start).toLocaleString('ru-RU',{timeZone:'Europe/Moscow',day:'numeric',month:'short',hour:'2-digit',minute:'2-digit'})} · ${price} ₽/чел.`,`training_${id}`);
+        notifyUser(member.id,`Тренер ${publicName(me)} подтвердил вашу тренировку · ${court.name} · ${new Date(start).toLocaleString('ru-RU',{timeZone:'Europe/Moscow',day:'numeric',month:'short',hour:'2-digit',minute:'2-digit'})} · ${price} ₽/чел.`,`training_${id}`);
       }
       db.exec('COMMIT');
     }catch(error){db.exec('ROLLBACK');throw error;}
@@ -883,12 +923,15 @@ async function api(req,res,url){
   }
   if(req.method==='GET'&&url.pathname==='/api/trainings'){
     const rows=db.prepare('SELECT * FROM trainings WHERE starts_at>? ORDER BY starts_at LIMIT 1000').all(new Date(Date.now()-3600000).toISOString());
-    return send(res,200,{trainings:(me.role==='coach'&&!isAdmin(me.id)?rows.filter(t=>t.coach_id===me.id):rows).map(t=>trainingDTO(t,me.id))});
+    return send(res,200,{trainings:(me.role==='coach'&&!isAdmin(me.id)?rows.filter(t=>t.coach_id===me.id):rows).filter(t=>listingVisible(t,me.id,'training')).map(t=>trainingDTO(t,me.id))});
   }
+  const trainingRead=url.pathname.match(/^\/api\/trainings\/([a-f0-9-]{36})$/i);
+  if(req.method==='GET'&&trainingRead)return send(res,200,{training:trainingDTO(requireListing(getTraining.get(trainingRead[1]),me.id,'training'),me.id)});
   if(req.method==='POST'&&url.pathname==='/api/trainings'){
     if(me.role!=='coach'&&!isAdmin(me.id))fail(403,'Создать тренировку может только тренер');
     const b=await body(req),sport=str(b.sport),format=str(b.format),seats=Number(b.seats),duration=Number(b.duration),price=Number(b.price);
     if(b.requiresApproval!==undefined&&typeof b.requiresApproval!=='boolean')fail(400,'Проверьте подтверждение заявок');
+    if(b.friendsOnly!==undefined&&typeof b.friendsOnly!=='boolean')fail(400,'Проверьте видимость тренировки');
     if(!['tennis','padel'].includes(sport))fail(400,'Выберите теннис или падел');
     if(!me.coachSports.includes(sport))fail(403,'Добавьте этот вид спорта в профиль тренера');
     if(!['individual','split','group'].includes(format)||format==='individual'&&seats!==1||format==='split'&&seats!==2||format==='group'&&(!Number.isInteger(seats)||seats<3||seats>6))fail(400,'Выберите формат и число участников');
@@ -899,9 +942,11 @@ async function api(req,res,url){
     const min=minInput===null?null:Number(minInput),max=maxInput===null?null:Number(maxInput);
     if((min===null)!==(max===null)||min!==null&&(!Number.isFinite(min)||!Number.isFinite(max)||min<1||max>7||min>max||min*2!==Math.round(min*2)||max*2!==Math.round(max*2)))fail(400,'Укажите диапазон NTRP от 1.0 до 7.0 либо без ограничения');
     const avg=min===null?null:(min+max)/2;
-    const id=crypto.randomUUID();db.prepare('INSERT INTO trainings(id,coach_id,sport,format,seats,court_id,starts_at,duration,avg_ntrp,price,note,created_at,ntrp_min,ntrp_max,requires_approval) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)').run(id,me.id,sport,format,seats,court.id,startsAt,duration,avg,price,str(b.note,240),now(),min,max,b.requiresApproval?1:0);
+    const dates=repeatDates(startsAt,b.repeat);if(!validNewStart(dates.at(-1)))fail(400,'Для повтора выберите первую дату минимум за 30 дней до конца периода планирования');
+    const id=crypto.randomUUID(),seriesId=b.repeat?id:null;
+    db.exec('BEGIN');try{for(const [index,when] of dates.entries())db.prepare('INSERT INTO trainings(id,coach_id,sport,format,seats,court_id,starts_at,duration,avg_ntrp,price,note,created_at,ntrp_min,ntrp_max,requires_approval,friends_only,series_id) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)').run(index?crypto.randomUUID():id,me.id,sport,format,seats,court.id,when,duration,avg,price,str(b.note,240),now(),min,max,b.requiresApproval?1:0,b.friendsOnly?1:0,seriesId);db.exec('COMMIT');}catch(error){db.exec('ROLLBACK');throw error;}
     processTrainingAds();
-    return send(res,201,{training:trainingDTO(getTraining.get(id),me.id)});
+    return send(res,201,{training:trainingDTO(getTraining.get(seriesId||id),me.id),created:dates.length});
   }
   const trainingEditor=url.pathname.match(/^\/api\/trainings\/([a-f0-9-]{36})$/i);
   if(trainingEditor&&['PATCH','DELETE'].includes(req.method)){
@@ -912,6 +957,7 @@ async function api(req,res,url){
     if(req.method==='DELETE'){db.prepare('UPDATE trainings SET cancelled_at=? WHERE id=?').run(now(),old.id);if(isAdmin(me.id)&&old.coach_id!==me.id)audit(me.id,'cancel','training',old.id);closePendingRequests('training',old.id,'Тренировка отменена, заявка закрыта');for(const member of getTrainingMembers.all(old.id))notifyUser(member.id,`Тренировка ${old.starts_at.slice(0,10)} отменена`);return send(res,200,{training:trainingDTO(getTraining.get(old.id),me.id)});}
     const b=await body(req),sport=str(b.sport),format=str(b.format),seats=Number(b.seats),duration=Number(b.duration),price=Number(b.price);
     if(b.requiresApproval!==undefined&&typeof b.requiresApproval!=='boolean')fail(400,'Проверьте подтверждение заявок');
+    if(b.friendsOnly!==undefined&&typeof b.friendsOnly!=='boolean')fail(400,'Проверьте видимость тренировки');
     if(!me.coachSports.includes(sport))fail(403,'Добавьте этот вид спорта в профиль тренера');
     if(!['individual','split','group'].includes(format)||format==='individual'&&seats!==1||format==='split'&&seats!==2||format==='group'&&(!Number.isInteger(seats)||seats<3||seats>6))fail(400,'Проверьте формат тренировки');
     if(seats<getTrainingMembers.all(old.id).length)fail(409,'Мест меньше числа записавшихся');
@@ -921,7 +967,7 @@ async function api(req,res,url){
     const min=b.ntrpMin===null?null:Number(b.ntrpMin),max=b.ntrpMax===null?null:Number(b.ntrpMax);
     if((min===null)!==(max===null)||min!==null&&(!Number.isFinite(min)||!Number.isFinite(max)||min<1||max>7||min>max||min*2!==Math.round(min*2)||max*2!==Math.round(max*2)))fail(400,'Проверьте диапазон NTRP');
     const requiresApproval=b.requiresApproval===undefined?!!old.requires_approval:b.requiresApproval;
-    db.prepare('UPDATE trainings SET sport=?,format=?,seats=?,court_id=?,starts_at=?,duration=?,avg_ntrp=?,ntrp_min=?,ntrp_max=?,price=?,note=?,requires_approval=? WHERE id=?').run(sport,format,seats,court.id,startsAt,duration,min===null?null:(min+max)/2,min,max,price,str(b.note,240),requiresApproval?1:0,old.id);
+    db.prepare('UPDATE trainings SET sport=?,format=?,seats=?,court_id=?,starts_at=?,duration=?,avg_ntrp=?,ntrp_min=?,ntrp_max=?,price=?,note=?,requires_approval=?,friends_only=? WHERE id=?').run(sport,format,seats,court.id,startsAt,duration,min===null?null:(min+max)/2,min,max,price,str(b.note,240),requiresApproval?1:0,b.friendsOnly===undefined?old.friends_only:b.friendsOnly?1:0,old.id);
     if(startsAt!==old.starts_at)db.prepare("DELETE FROM event_reminders WHERE kind='training' AND listing_id=?").run(old.id);
     if(!requiresApproval&&old.requires_approval)closePendingRequests('training',old.id,'Тренер изменил условия записи. Отправьте заявку снова.');
     return send(res,200,{training:trainingDTO(getTraining.get(old.id),me.id)});
@@ -939,7 +985,7 @@ async function api(req,res,url){
   if(req.method==='POST'&&completeTraining){const training=getTraining.get(completeTraining[1]);if(!training||training.coach_id!==me.id)fail(403,'Подтвердить тренировку может только тренер');if(training.cancelled_at||Date.parse(training.starts_at)+training.duration*60000>Date.now())fail(409,'Тренировка ещё не завершилась');if(db.prepare('SELECT 1 FROM completed_trainings WHERE training_id=?').get(training.id))fail(409,'Тренировка уже подтверждена');db.prepare('INSERT INTO completed_trainings VALUES(?,?)').run(training.id,now());for(const m of getTrainingMembers.all(training.id))notifyUser(m.id,'Тренер подтвердил проведённую тренировку. Можно оставить отзыв.');return send(res,200,{training:trainingDTO(training,me.id)});}
   const trainingMatch=url.pathname.match(/^\/api\/trainings\/([a-f0-9-]{36})\/(join|leave)$/i);
   if(req.method==='POST'&&trainingMatch){
-    const training=getTraining.get(trainingMatch[1]);if(!training)fail(404,'Тренировка не найдена');
+    const training=requireListing(getTraining.get(trainingMatch[1]),me.id,'training');
     if(training.cancelled_at)fail(409,'Тренировка отменена');
     const members=getTrainingMembers.all(training.id),joined=members.some(m=>m.id===me.id);
     if(trainingMatch[2]==='join'){
@@ -949,8 +995,8 @@ async function api(req,res,url){
       if(training.requires_approval){
         if(getRequest.get('training',training.id,me.id)?.status==='pending')fail(409,'Заявка уже ждёт подтверждения');
         db.prepare("INSERT INTO join_requests(kind,listing_id,user_id,status,created_at,resolved_at) VALUES('training',?,?,'pending',?,NULL) ON CONFLICT(kind,listing_id,user_id) DO UPDATE SET status='pending',created_at=excluded.created_at,resolved_at=NULL").run(training.id,me.id,now());
-        notifyUser(training.coach_id,`${me.name} просит записать его на тренировку`);
-      }else{db.prepare('INSERT INTO training_participants VALUES(?,?,?)').run(training.id,me.id,now());db.prepare("DELETE FROM join_requests WHERE kind='training' AND listing_id=? AND user_id=?").run(training.id,me.id);notifyUser(training.coach_id,`${me.name} записался на тренировку`);}
+        notifyUser(training.coach_id,`${publicName(me)} просит записать его на тренировку`);
+      }else{db.prepare('INSERT INTO training_participants VALUES(?,?,?)').run(training.id,me.id,now());db.prepare("DELETE FROM join_requests WHERE kind='training' AND listing_id=? AND user_id=?").run(training.id,me.id);notifyUser(training.coach_id,`${publicName(me)} записался на тренировку`);}
     }else{
       const pending=getRequest.get('training',training.id,me.id)?.status==='pending';
       if(!joined&&!pending)fail(409,'Вы не записаны');
@@ -965,7 +1011,7 @@ async function api(req,res,url){
     let rows=db.prepare('SELECT * FROM games WHERE starts_at>? ORDER BY starts_at LIMIT 100').all(new Date(Date.now()-30*86400000).toISOString());
     if(sport&&sport!=='all')rows=rows.filter(g=>g.sport===sport);
     if(mine)rows=rows.filter(g=>getMembers.all(g.id).some(m=>m.id===me.id));
-    return send(res,200,{games:rows.map(g=>gameDTO(g,me.id))});
+    return send(res,200,{games:rows.filter(g=>listingVisible(g,me.id,'game')).map(g=>gameDTO(g,me.id))});
   }
   if(req.method==='GET'&&url.pathname==='/api/match-polls'){
     processMatchPrompts();
@@ -976,6 +1022,7 @@ async function api(req,res,url){
     const b=await body(req);const sport=str(b.sport),kind=str(b.kind),opponentGender=b.opponentGender??'any';
     if(b.courtReserved!==undefined&&typeof b.courtReserved!=='boolean')fail(400,'Проверьте статус бронирования корта');
     if(b.requiresApproval!==undefined&&typeof b.requiresApproval!=='boolean')fail(400,'Проверьте подтверждение заявок');
+    if(b.friendsOnly!==undefined&&typeof b.friendsOnly!=='boolean')fail(400,'Проверьте видимость игры');
     if(!['any','male','female'].includes(opponentGender))fail(400,'Выберите пол соперника');
     if(!['tennis','padel'].includes(sport)||!['friendly','rating'].includes(kind))fail(400,'Выберите вид игры');
     const seats=Number(b.seats);if(![2,4].includes(seats))fail(400,'Рейтинговая игра пока доступна только 1 на 1');
@@ -984,12 +1031,17 @@ async function api(req,res,url){
     if(!Number.isFinite(min)||!Number.isFinite(max)||min<1||max>7||max<min||![60,90,120].includes(duration)||!Number.isInteger(price)||price<0||price>100000)fail(400,'Проверьте параметры игры');
     const court=allCourts().find(c=>c.id===b.courtId&&c.sport===sport);if(!court)fail(400,'Выберите корт из списка для этого вида спорта');
     const venue=court.name,city=court.city||'Краснодар';
-    const id=crypto.randomUUID();db.exec('BEGIN');try{
-      db.prepare('INSERT INTO games(id,sport,city,venue,court_id,starts_at,duration,level_min,level_max,seats,price,kind,note,creator_id,created_at,opponent_gender,requires_approval,court_reserved) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)').run(id,sport,city,venue,court.id,startsAt,duration,min,max,seats,price,kind,str(b.note,240),me.id,now(),opponentGender,b.requiresApproval?1:0,b.courtReserved?1:0);
-      db.prepare('INSERT INTO participants VALUES(?,?,?)').run(id,me.id,now());db.exec('COMMIT');
+    const dates=repeatDates(startsAt,b.repeat);if(!validNewStart(dates.at(-1)))fail(400,'Для повтора выберите первую дату минимум за 30 дней до конца периода планирования');
+    const id=crypto.randomUUID(),seriesId=b.repeat?id:null;db.exec('BEGIN');try{
+      for(const [index,when] of dates.entries()){
+        const occurrenceId=index?crypto.randomUUID():id;
+        db.prepare('INSERT INTO games(id,sport,city,venue,court_id,starts_at,duration,level_min,level_max,seats,price,kind,note,creator_id,created_at,opponent_gender,requires_approval,court_reserved,friends_only,series_id) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)').run(occurrenceId,sport,city,venue,court.id,when,duration,min,max,seats,price,kind,str(b.note,240),me.id,now(),opponentGender,b.requiresApproval?1:0,b.courtReserved?1:0,b.friendsOnly?1:0,seriesId);
+        db.prepare('INSERT INTO participants VALUES(?,?,?)').run(occurrenceId,me.id,now());
+      }db.exec('COMMIT');
     }catch(e){db.exec('ROLLBACK');throw e;}
-    broadcast(`Новая игра: ${sport==='tennis'?'теннис':'падел'} · ${court.name} · ${new Date(startsAt).toLocaleString('ru-RU',{timeZone:'Europe/Moscow',day:'numeric',month:'short',hour:'2-digit',minute:'2-digit'})}`,`game_${id}`);
-    return send(res,201,{game:gameDTO(getGame.get(id),me.id)});
+    if(!b.friendsOnly)broadcast(`Новая игра: ${sport==='tennis'?'теннис':'падел'} · ${court.name} · ${new Date(startsAt).toLocaleString('ru-RU',{timeZone:'Europe/Moscow',day:'numeric',month:'short',hour:'2-digit',minute:'2-digit'})}${b.repeat?' · ежедневно 30 дней':''}`,`game_${id}`);
+    else for(const person of db.prepare("SELECT sender_id AS senderId,receiver_id AS receiverId FROM friendships WHERE status='accepted' AND (sender_id=? OR receiver_id=?)").all(me.id,me.id))notifyUser(person.senderId===me.id?person.receiverId:person.senderId,`Новая игра для друзей · ${court.name}`,`game_${id}`);
+    return send(res,201,{game:gameDTO(getGame.get(id),me.id),created:dates.length});
   }
   const gameEditor=url.pathname.match(/^\/api\/games\/([a-f0-9-]{36})$/i);
   if(gameEditor&&['PATCH','DELETE'].includes(req.method)){
@@ -1001,6 +1053,7 @@ async function api(req,res,url){
     const b=await body(req),sport=str(b.sport),kind=str(b.kind),seats=Number(b.seats),duration=Number(b.duration),price=Number(b.price),opponentGender=b.opponentGender;
     if(b.courtReserved!==undefined&&typeof b.courtReserved!=='boolean')fail(400,'Проверьте статус бронирования корта');
     if(b.requiresApproval!==undefined&&typeof b.requiresApproval!=='boolean')fail(400,'Проверьте подтверждение заявок');
+    if(b.friendsOnly!==undefined&&typeof b.friendsOnly!=='boolean')fail(400,'Проверьте видимость игры');
     if(!['tennis','padel'].includes(sport)||!['friendly','rating'].includes(kind)||![2,4].includes(seats)||!['any','male','female'].includes(opponentGender))fail(400,'Проверьте формат игры');
     if(seats<getMembers.all(old.id).length)fail(409,'Мест меньше числа участников');
     const court=allCourts().find(c=>c.id===b.courtId&&c.sport===sport);if(!court)fail(400,'Выберите корт для выбранного вида спорта');
@@ -1010,13 +1063,13 @@ async function api(req,res,url){
     const requiresApproval=b.requiresApproval===undefined?!!old.requires_approval:b.requiresApproval;
     const courtReserved=b.courtReserved===undefined?!!old.court_reserved:b.courtReserved;
     if(courtReserved&&(court.id!==old.court_id||startsAt!==old.starts_at)&&b.courtReserved===undefined)fail(400,'Подтвердите бронь нового корта или времени');
-    db.prepare('UPDATE games SET sport=?,kind=?,seats=?,court_id=?,venue=?,city=?,starts_at=?,duration=?,level_min=?,level_max=?,price=?,opponent_gender=?,note=?,requires_approval=?,court_reserved=? WHERE id=?').run(sport,kind,seats,court.id,court.name,court.city||'Краснодар',startsAt,duration,min,max,price,opponentGender,str(b.note,240),requiresApproval?1:0,courtReserved?1:0,old.id);
+    db.prepare('UPDATE games SET sport=?,kind=?,seats=?,court_id=?,venue=?,city=?,starts_at=?,duration=?,level_min=?,level_max=?,price=?,opponent_gender=?,note=?,requires_approval=?,court_reserved=?,friends_only=? WHERE id=?').run(sport,kind,seats,court.id,court.name,court.city||'Краснодар',startsAt,duration,min,max,price,opponentGender,str(b.note,240),requiresApproval?1:0,courtReserved?1:0,b.friendsOnly===undefined?old.friends_only:b.friendsOnly?1:0,old.id);
     if(startsAt!==old.starts_at)db.prepare("DELETE FROM event_reminders WHERE kind='game' AND listing_id=?").run(old.id);
     if(!requiresApproval&&old.requires_approval)closePendingRequests('game',old.id,'Организатор изменил условия записи. Отправьте заявку снова.');
     return send(res,200,{game:gameDTO(getGame.get(old.id),me.id)});
   }
   const match=url.pathname.match(/^\/api\/games\/([a-f0-9-]{36})(?:\/(join|leave|attend|confirm-attendance|report-absence|contest-absence|result|confirm|dispute|vote))?$/i);
-  if(match){const game=getGame.get(match[1]);if(!game)fail(404,'Игра не найдена');const action=match[2];
+  if(match){const game=requireListing(getGame.get(match[1]),me.id,'game');const action=match[2];
     if(req.method==='GET'&&!action)return send(res,200,{game:gameDTO(game,me.id)});
     if(req.method!=='POST')fail(405,'Метод не поддерживается');
     if(game.cancelled_at)fail(409,'Игра отменена');
@@ -1029,8 +1082,8 @@ async function api(req,res,url){
       if(game.requires_approval){
         if(getRequest.get('game',game.id,me.id)?.status==='pending')fail(409,'Заявка уже ждёт подтверждения');
         db.prepare("INSERT INTO join_requests(kind,listing_id,user_id,status,created_at,resolved_at) VALUES('game',?,?,'pending',?,NULL) ON CONFLICT(kind,listing_id,user_id) DO UPDATE SET status='pending',created_at=excluded.created_at,resolved_at=NULL").run(game.id,me.id,now());
-        notifyUser(game.creator_id,`${me.name} просит присоединиться к игре`);
-      }else{db.prepare('INSERT INTO participants VALUES(?,?,?)').run(game.id,me.id,now());db.prepare("DELETE FROM join_requests WHERE kind='game' AND listing_id=? AND user_id=?").run(game.id,me.id);notifyUser(game.creator_id,`${me.name} присоединился к игре`);}
+        notifyUser(game.creator_id,`${publicName(me)} просит присоединиться к игре`);
+      }else{db.prepare('INSERT INTO participants VALUES(?,?,?)').run(game.id,me.id,now());db.prepare("DELETE FROM join_requests WHERE kind='game' AND listing_id=? AND user_id=?").run(game.id,me.id);notifyUser(game.creator_id,`${publicName(me)} присоединился к игре`);}
     }else if(action==='leave'){
       if(game.kind==='rating'&&Date.parse(game.starts_at)+game.duration*60000<=Date.now())fail(409,'Рейтинговая игра завершена');
       const pending=getRequest.get('game',game.id,me.id)?.status==='pending';
@@ -1046,7 +1099,7 @@ async function api(req,res,url){
         if(!changed.changes)fail(409,'Вы уже подтвердили встречу');
         const count=db.prepare("SELECT COUNT(*) AS n FROM match_confirmations WHERE game_id=? AND phase='attendance'").get(game.id).n;
         if(count===4)for(const member of members)notifyUser(member.id,'Все участники подтвердили встречу. Можно внести счёт.');
-        else if(me.id!==game.creator_id)notifyUser(game.creator_id,`${me.name} подтвердил встречу · ${count} из 4`);
+        else if(me.id!==game.creator_id)notifyUser(game.creator_id,`${publicName(me)} подтвердил встречу · ${count} из 4`);
         return send(res,200,{game:gameDTO(getGame.get(game.id),me.id),user:userDTO(me.id)});
       }
       if(game.attendance_at)fail(409,'Подтверждение уже отправлено');
@@ -1091,7 +1144,7 @@ async function api(req,res,url){
         const changed=db.prepare("INSERT OR IGNORE INTO match_confirmations(game_id,user_id,phase,created_at) VALUES(?,?,'result',?)").run(game.id,me.id,now());
         if(!changed.changes)fail(409,'Вы уже подтвердили счёт');
         const count=db.prepare("SELECT COUNT(*) AS n FROM match_confirmations WHERE game_id=? AND phase='result'").get(game.id).n;
-        if(count<3){notifyUser(game.creator_id,`${me.name} подтвердил счёт · ${count} из 3`);return send(res,200,{game:gameDTO(getGame.get(game.id),me.id),user:userDTO(me.id)});}
+        if(count<3){notifyUser(game.creator_id,`${publicName(me)} подтвердил счёт · ${count} из 3`);return send(res,200,{game:gameDTO(getGame.get(game.id),me.id),user:userDTO(me.id)});}
       }
       db.exec('BEGIN');try{db.prepare('UPDATE games SET result_confirmed=1 WHERE id=? AND result_confirmed=0').run(game.id);applyMatchRating(game,members);db.exec('COMMIT');}catch(e){db.exec('ROLLBACK');throw e;}
       for(const member of members)notifyUser(member.id,'Результат подтверждён. Рейтинг Tennis GO обновлён.');
@@ -1138,12 +1191,13 @@ async function handleBotUpdate(update){
       if(!training||training.cancelled_at||Date.parse(training.starts_at)<=Date.now())fail(409,'Запись закрыта');
       if(signup){
         if(user.role!=='player'||training.coach_id===user.id)fail(403,'Запись доступна игрокам');
+        if(!listingVisible(training,user.id,'training'))fail(403,'Эта тренировка доступна только друзьям тренера');
         if(getTrainingMembers.all(training.id).some(m=>m.id===user.id))fail(409,'Вы уже записаны');
         if(getTrainingMembers.all(training.id).length>=training.seats)fail(409,'Свободных мест нет');
         if(getRequest.get('training',training.id,user.id)?.status==='pending')fail(409,'Заявка уже ждёт подтверждения');
         db.prepare("INSERT INTO join_requests(kind,listing_id,user_id,status,created_at,resolved_at) VALUES('training',?,?,'pending',?,NULL) ON CONFLICT(kind,listing_id,user_id) DO UPDATE SET status='pending',created_at=excluded.created_at,resolved_at=NULL").run(training.id,user.id,now());
         const open=notificationButton(`training_${training.id}`);
-        notifyUser(training.coach_id,`${user.name} просит записаться на тренировку. Подтвердите или отклоните.`,`training_${training.id}`,{inline_keyboard:[[{text:'Подтвердить',callback_data:`ta:${training.id}:${user.id}`},{text:'Отклонить',callback_data:`tr:${training.id}:${user.id}`}],...(open?[[open]]:[])]});
+        notifyUser(training.coach_id,`${publicName(user)} просит записаться на тренировку. Подтвердите или отклоните.`,`training_${training.id}`,{inline_keyboard:[[{text:'Подтвердить',callback_data:`ta:${training.id}:${user.id}`},{text:'Отклонить',callback_data:`tr:${training.id}:${user.id}`}],...(open?[[open]]:[])]});
         message='Заявка отправлена тренеру. Ждите подтверждения';done=true;
       }else{
         if(training.coach_id!==user.id)fail(403,'Решение принимает тренер');
@@ -1152,7 +1206,7 @@ async function handleBotUpdate(update){
           if(getRequest.get('training',training.id,playerId)?.status!=='pending')fail(409,'Заявка уже обработана');
           if(approval){if(getTrainingMembers.all(training.id).length>=training.seats)fail(409,'Свободных мест нет');db.prepare('INSERT INTO training_participants VALUES(?,?,?)').run(training.id,playerId,now());}
           db.prepare("UPDATE join_requests SET status=?,resolved_at=? WHERE kind='training' AND listing_id=? AND user_id=? AND status='pending'").run(approval?'approved':'rejected',now(),training.id,playerId);
-          notifyUser(playerId,approval?`Тренер ${user.name} подтвердил вашу запись на тренировку`:`Тренер ${user.name} отклонил заявку на тренировку`,`training_${training.id}`);
+          notifyUser(playerId,approval?`Тренер ${publicName(user)} подтвердил вашу запись на тренировку`:`Тренер ${publicName(user)} отклонил заявку на тренировку`,`training_${training.id}`);
           db.exec('COMMIT');
         }catch(error){db.exec('ROLLBACK');throw error;}
         message=approval?'Игрок записан':'Заявка отклонена';done=true;
