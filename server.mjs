@@ -395,7 +395,7 @@ async function weatherHours(city='Краснодар'){
  weatherPending.set(city,pending);try{return await pending;}finally{weatherPending.delete(city);}
 }
 async function api(req,res,url){
-  if(url.pathname==='/api/config')return send(res,200,{demo:!process.env.BOT_TOKEN,botUsername:process.env.BOT_USERNAME||'',cities,version:'0.24.0'});
+  if(url.pathname==='/api/config')return send(res,200,{demo:!process.env.BOT_TOKEN,botUsername:process.env.BOT_USERNAME||'',cities,version:'0.25.0'});
   if(req.method==='GET'&&url.pathname==='/api/weather'){const city=url.searchParams.get('city')||'Краснодар';if(!cities.includes(city))fail(400,'Выберите город из списка');const hours=await weatherHours(city);return send(res,200,{hours,status:weatherCaches.get(city).status,city,source:'Open-Meteo'});}
   const identity=authenticate(req);addUser.run(identity.id,identity.name,identity.username,now());
   const me=userDTO(identity.id);
@@ -571,13 +571,14 @@ async function api(req,res,url){
     const count=(sql,...args)=>db.prepare(sql).get(...args).n;
     const total=count('SELECT COUNT(*) AS n FROM users WHERE registration_version>=2');
     const newToday=count('SELECT COUNT(*) AS n FROM users WHERE registration_version>=2 AND registered_at>=?',start.toISOString()),new7=count('SELECT COUNT(*) AS n FROM users WHERE registration_version>=2 AND registered_at>=?',cut7),new30=count('SELECT COUNT(*) AS n FROM users WHERE registration_version>=2 AND registered_at>=?',cut30);
+    const onlineNow=count("SELECT COUNT(*) AS n FROM users WHERE registration_version>=2 AND blocked_at IS NULL AND last_seen_at>?",new Date(Date.now()-120000).toISOString());
     const activeToday=count('SELECT COUNT(*) AS n FROM activity_days WHERE day=?',today),active7=count('SELECT COUNT(DISTINCT user_id) AS n FROM activity_days WHERE day>=?',dayShift(-6)),active30=count('SELECT COUNT(DISTINCT user_id) AS n FROM activity_days WHERE day>=?',dayShift(-29));
     const events=db.prepare("SELECT type,substr(datetime(at,'+3 hours'),1,10) AS day,COUNT(*) AS n FROM (SELECT 'games' AS type,created_at AS at FROM games UNION ALL SELECT 'trainings',created_at FROM trainings UNION ALL SELECT 'joins',joined_at FROM participants UNION ALL SELECT 'joins',joined_at FROM training_participants UNION ALL SELECT 'messages',created_at FROM direct_messages UNION ALL SELECT 'messages',created_at FROM chat_messages UNION ALL SELECT 'bookings',created_at FROM court_reservations UNION ALL SELECT 'news',published_at FROM news) WHERE at>=? GROUP BY type,day").all(cut30);
     const activity=db.prepare('SELECT day,COUNT(*) AS n FROM activity_days WHERE day>=? GROUP BY day').all(dayShift(-29));
     const registrations=db.prepare("SELECT substr(datetime(registered_at,'+3 hours'),1,10) AS day,COUNT(*) AS n FROM users WHERE registration_version>=2 AND registered_at>=? GROUP BY day").all(cut30);
     const daily=Array.from({length:30},(_,i)=>{const day=dayShift(i-29),counts=Object.fromEntries(events.filter(e=>e.day===day).map(e=>[e.type,e.n]));return {day,new:registrations.find(a=>a.day===day)?.n||0,active:activity.find(a=>a.day===day)?.n||0,games:counts.games||0,trainings:counts.trainings||0,joins:counts.joins||0,messages:counts.messages||0,bookings:counts.bookings||0,news:counts.news||0};});
     const sum=key=>daily.slice(-7).reduce((n,d)=>n+d[key],0);
-    return send(res,200,{total,newToday,new7,new30,activeToday,active7,active30,last7:{games:sum('games'),trainings:sum('trainings'),joins:sum('joins'),messages:sum('messages'),bookings:sum('bookings'),news:sum('news')},daily});
+    return send(res,200,{total,newToday,new7,new30,onlineNow,activeToday,active7,active30,last7:{games:sum('games'),trainings:sum('trainings'),joins:sum('joins'),messages:sum('messages'),bookings:sum('bookings'),news:sum('news')},daily});
   }
   if(url.pathname==='/api/admin/listings'&&req.method==='GET'){
     if(!isAdmin(me.id))fail(403,'Доступно только администратору');
@@ -695,10 +696,6 @@ async function api(req,res,url){
     if(role!==null&&role!=='coach')fail(400,'Неизвестный фильтр пользователей');
     const ids=db.prepare("SELECT id,COALESCE(NULLIF(display_name,''),name) AS name FROM users WHERE registration_version>=2 AND blocked_at IS NULL AND id<>? AND (? IS NULL OR role=?) ORDER BY COALESCE(NULLIF(display_name,''),name),id").all(me.id,role,role).filter(row=>publicName(userDTO(row.id)).toLocaleLowerCase('ru-RU').includes(search.toLocaleLowerCase('ru-RU'))).slice(offset,offset+31);
     return send(res,200,{users:ids.slice(0,30).map(({id})=>{const u=userDTO(id);const {role,city,avatarId,photoData,ntrpLevel,coachSports,coachYears,coachCourts,coachAchievements}=u;return {id,name:publicName(u),role,city,avatarId,photoData,ntrpLevel,coachSports,coachYears,coachCourts,coachAchievements,online:online(id),friend:areFriends(me.id,id)};}),hasMore:ids.length>30});
-  }
-  if(req.method==='GET'&&url.pathname==='/api/presence'){
-    const rows=db.prepare("SELECT id FROM users WHERE registration_version>=2 AND blocked_at IS NULL AND role IN ('player','coach') AND id<>? AND last_seen_at>? ORDER BY last_seen_at DESC LIMIT 40").all(me.id,new Date(Date.now()-120000).toISOString());
-    return send(res,200,{users:rows.map(row=>{const u=userDTO(row.id);return {id:u.id,name:publicName(u),role:u.role,city:u.city,avatarId:u.avatarId,photoData:u.photoData,online:true};})});
   }
   if(req.method==='GET'&&url.pathname==='/api/friends'){
     const rows=db.prepare("SELECT sender_id AS senderId,receiver_id AS receiverId,status FROM friendships WHERE sender_id=? OR receiver_id=? ORDER BY created_at DESC").all(me.id,me.id);

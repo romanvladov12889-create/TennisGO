@@ -1,0 +1,39 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <title>Позвонить в клуб · Tennis GO</title>
+  <style>
+    :root{font-family:Inter,-apple-system,BlinkMacSystemFont,"Segoe UI",Arial,sans-serif;color:#23362a;background:#edf2eb}
+    *{box-sizing:border-box}body{margin:0;min-height:100dvh;display:grid;place-items:center;padding:20px}
+    main{max-width:440px;width:100%;background:#fff;border:1px solid #dce8dd;border-radius:26px;padding:28px;box-shadow:0 16px 35px #2146311b;text-align:center}
+    .mark{font-size:42px;margin-bottom:8px}h1{font-size:23px;line-height:1.22;margin:4px 0 9px}p{color:#6b7e70;margin:8px 0 20px;line-height:1.4}
+    strong{display:block;font-size:24px;margin:12px 0 18px}a,button{width:100%;min-height:50px;border:0;border-radius:15px;display:grid;place-items:center;font-family:inherit;font-size:16px;font-weight:700;text-decoration:none;cursor:pointer}
+    .call{background:#236c44;color:#fff}.copy{margin-top:10px;background:#eef5ed;color:#24563a}small{display:block;color:#89998c;margin-top:20px}
+  </style>
+</head>
+<body>
+  <main>
+    <div class="mark">📞</div>
+    <h1 id="club">Позвонить в клуб</h1>
+    <p>Номер клуба откроется в приложении для звонков.</p>
+    <strong id="number"></strong>
+    <a class="call" id="dial" href="#">Позвонить</a>
+    <button class="copy" id="copy" type="button">Скопировать номер</button>
+    <small>Tennis GO · Свободное время уточняйте в клубе</small>
+  </main>
+  <script>
+    const params=new URLSearchParams(location.search),phone=params.get('phone')||'',number=phone.replace(/[^+\d]/g,''),club=(params.get('club')||'Позвонить в клуб').slice(0,100);
+    document.querySelector('#club').textContent=club;
+    if(number.replace(/\D/g,'').length>=10&&number.replace(/\D/g,'').length<=15){
+      document.querySelector('#number').textContent=number;
+      document.querySelector('#dial').href='tel:'+number;
+      document.querySelector('#copy').addEventListener('click',async()=>{
+        try{await navigator.clipboard.writeText(number);document.querySelector('#copy').textContent='Номер скопирован ✓';}
+        catch{document.querySelector('#copy').textContent='Выделите номер выше и скопируйте';}
+      });
+    }else{document.querySelector('#number').textContent='Номер не указан';document.querySelector('#dial').remove();document.querySelector('#copy').remove();}
+  </script>
+</body>
+</html>
