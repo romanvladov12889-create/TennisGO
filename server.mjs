@@ -21,6 +21,7 @@ db.exec(`PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON;
  CREATE TABLE IF NOT EXISTS trainings(id TEXT PRIMARY KEY, coach_id TEXT NOT NULL REFERENCES users(id), format TEXT NOT NULL, seats INTEGER NOT NULL, court_id TEXT NOT NULL, starts_at TEXT NOT NULL, duration INTEGER NOT NULL, avg_ntrp REAL, price INTEGER NOT NULL, note TEXT NOT NULL, created_at TEXT NOT NULL);
  CREATE TABLE IF NOT EXISTS training_participants(training_id TEXT NOT NULL REFERENCES trainings(id), user_id TEXT NOT NULL REFERENCES users(id), joined_at TEXT NOT NULL, PRIMARY KEY(training_id,user_id));
  CREATE TABLE IF NOT EXISTS training_requests(id TEXT PRIMARY KEY,player_id TEXT NOT NULL REFERENCES users(id),sport TEXT NOT NULL CHECK(sport IN ('tennis','padel')),city TEXT NOT NULL,format TEXT NOT NULL CHECK(format IN ('individual','split','group')),starts_at TEXT NOT NULL,ends_at TEXT NOT NULL,court_ids TEXT NOT NULL,note TEXT NOT NULL,created_at TEXT NOT NULL,cancelled_at TEXT);
+ CREATE TABLE IF NOT EXISTS training_request_participants(request_id TEXT NOT NULL REFERENCES training_requests(id),user_id TEXT NOT NULL REFERENCES users(id),joined_at TEXT NOT NULL,PRIMARY KEY(request_id,user_id));
  CREATE INDEX IF NOT EXISTS training_requests_start ON training_requests(starts_at);
  CREATE TABLE IF NOT EXISTS chat_messages(id TEXT PRIMARY KEY,kind TEXT NOT NULL,listing_id TEXT NOT NULL,sender_id TEXT NOT NULL REFERENCES users(id),peer_id TEXT NOT NULL REFERENCES users(id),body TEXT NOT NULL,created_at TEXT NOT NULL);
  CREATE INDEX IF NOT EXISTS chat_listing ON chat_messages(kind,listing_id,created_at);
@@ -78,6 +79,9 @@ if(!trainingColumns.has('ntrp_max'))db.exec('ALTER TABLE trainings ADD COLUMN nt
 if(!trainingColumns.has('cancelled_at'))db.exec('ALTER TABLE trainings ADD COLUMN cancelled_at TEXT');
 if(!trainingColumns.has('requires_approval'))db.exec('ALTER TABLE trainings ADD COLUMN requires_approval INTEGER NOT NULL DEFAULT 0');
 if(!db.prepare('PRAGMA table_info(training_requests)').all().some(x=>x.name==='accepted_training_id'))db.exec('ALTER TABLE training_requests ADD COLUMN accepted_training_id TEXT');
+if(!db.prepare('PRAGMA table_info(training_requests)').all().some(x=>x.name==='seats'))db.exec('ALTER TABLE training_requests ADD COLUMN seats INTEGER');
+db.exec("UPDATE training_requests SET seats=CASE format WHEN 'individual' THEN 1 WHEN 'split' THEN 2 ELSE 6 END WHERE seats IS NULL");
+db.exec('CREATE INDEX IF NOT EXISTS training_request_participants_by_user ON training_request_participants(user_id,request_id)');
 db.exec('CREATE TABLE IF NOT EXISTS training_ads(training_id TEXT NOT NULL REFERENCES trainings(id),user_id TEXT NOT NULL REFERENCES users(id),slot_key TEXT NOT NULL,sent_at TEXT NOT NULL,PRIMARY KEY(training_id,user_id,slot_key))');
 if(!trainingColumns.has('ntrp_min')||!trainingColumns.has('ntrp_max'))db.exec('UPDATE trainings SET ntrp_min=avg_ntrp,ntrp_max=avg_ntrp WHERE avg_ntrp IS NOT NULL');
 if(!db.prepare('PRAGMA table_info(chat_messages)').all().some(column=>column.name==='read_at'))db.exec('ALTER TABLE chat_messages ADD COLUMN read_at TEXT');
@@ -354,7 +358,8 @@ function authenticate(req){
 }
 function gameDTO(game,viewer){const members=getMembers.all(game.id).map((m,i)=>({...m,team:i%2===0?'A':'B'})),court=allCourts().find(c=>c.id===game.court_id),creator=userDTO(game.creator_id),doubles=game.seats===4;const confirmations=doubles?db.prepare('SELECT user_id AS userId,phase FROM match_confirmations WHERE game_id=?').all(game.id):[];return {id:game.id,sport:game.sport,city:game.city,venue:game.venue,courtId:game.court_id,courtAddress:court?.address||'',startsAt:game.starts_at,duration:game.duration,levelMin:game.level_min,levelMax:game.level_max,seats:game.seats,price:game.price,kind:game.kind,note:game.note,courtReserved:!!game.court_reserved,creatorId:game.creator_id,creatorName:creator?.name||'Организатор',creatorAvatarId:creator?.avatarId||null,creatorPhotoData:creator?.photoData||null,creatorGender:creator?.gender||null,creatorNtrp:creator?.ntrpLevel??null,creatorRole:creator?.role||null,opponentGender:game.opponent_gender,cancelled:!!game.cancelled_at,members,joined:members.some(m=>m.id===viewer),result:game.result,resultBy:game.result_by,resultConfirmed:!!game.result_confirmed,resultDisputed:!!game.result_disputed_at,resultDisputeReason:game.result_dispute_reason||null,attendanceBy:game.attendance_by,attendanceDone:doubles?confirmations.some(c=>c.userId===viewer&&c.phase==='attendance'):game.attendance_by===viewer||!!game.attendance_confirmed_at&&members.some(m=>m.id===viewer),attendanceCount:doubles?confirmations.filter(c=>c.phase==='attendance').length:(game.attendance_confirmed_at?2:game.attendance_at?1:0),attendanceConfirmed:doubles?confirmations.filter(c=>c.phase==='attendance').length===4:!!game.attendance_confirmed_at,resultAcknowledged:doubles?confirmations.some(c=>c.userId===viewer&&c.phase==='result'):false,resultConfirmationCount:doubles?confirmations.filter(c=>c.phase==='result').length:(game.result_confirmed?2:game.result?1:0),absenceBy:game.absence_by,absenceReason:game.absence_reason,absenceDisputed:!!game.absence_disputed_at,courtType:court?.courtType||null,voteStatus:db.prepare('SELECT status FROM match_polls WHERE game_id=?').get(game.id)?.status||null,myVote:db.prepare('SELECT choice FROM match_votes WHERE game_id=? AND user_id=?').get(game.id,viewer)?.choice||null,voteCount:db.prepare('SELECT COUNT(*) AS n FROM match_votes WHERE game_id=?').get(game.id).n,...requestState('game',game.id,viewer,game)};}
 function trainingDTO(training,viewer){const coach=userDTO(training.coach_id),members=getTrainingMembers.all(training.id),court=allCourts().find(c=>c.id===training.court_id),viewerRole=userDTO(viewer)?.role;return {id:training.id,sport:training.sport||'tennis',city:court?.city||'Краснодар',coachId:training.coach_id,coachName:coach?.name||'Тренер',coachGender:coach?.gender||null,coachYears:coach?.coachYears??null,coachAvatarId:coach?.avatarId||null,coachPhotoData:coach?.photoData||null,format:training.format,seats:training.seats,courtId:training.court_id,courtName:court?.name||'',courtAddress:court?.address||'',courtType:court?.courtType||null,startsAt:training.starts_at,duration:training.duration,ntrpMin:training.ntrp_min,ntrpMax:training.ntrp_max,price:viewerRole==='coach'&&training.coach_id!==viewer&&!isAdmin(viewer)?null:training.price,note:training.note,cancelled:!!training.cancelled_at,completed:!!db.prepare('SELECT 1 FROM completed_trainings WHERE training_id=?').get(training.id),reviewed:!!db.prepare('SELECT 1 FROM training_reviews WHERE training_id=? AND user_id=?').get(training.id,viewer),members,joined:members.some(m=>m.id===viewer),...requestState('training',training.id,viewer,training)};}
-function trainingRequestDTO(request){const owner=userDTO(request.player_id),courtIds=JSON.parse(request.court_ids),all=allCourts();return {id:request.id,playerId:request.player_id,playerName:owner?.name||'Игрок',playerAvatarId:owner?.avatarId||null,playerPhotoData:owner?.photoData||null,playerNtrp:owner?.ntrpLevel??null,sport:request.sport,city:request.city,format:request.format,startsAt:request.starts_at,endsAt:request.ends_at,courts:courtIds.map(id=>all.find(c=>c.id===id)).filter(Boolean).map(c=>({id:c.id,name:c.name,address:c.address})),note:request.note,createdAt:request.created_at};}
+function requestMembers(request){const owner=userDTO(request.player_id),extra=db.prepare("SELECT u.id,COALESCE(NULLIF(u.display_name,''),u.name) AS name,u.avatar_id AS avatarId,u.photo_data AS photoData FROM training_request_participants p JOIN users u ON u.id=p.user_id WHERE p.request_id=? ORDER BY p.joined_at").all(request.id);return [{id:request.player_id,name:owner?.name||'Игрок',avatarId:owner?.avatarId||null,photoData:owner?.photoData||null},...extra];}
+function trainingRequestDTO(request,viewer=null){const owner=userDTO(request.player_id),courtIds=JSON.parse(request.court_ids),all=allCourts(),members=requestMembers(request);return {id:request.id,playerId:request.player_id,playerName:owner?.name||'Игрок',playerAvatarId:owner?.avatarId||null,playerPhotoData:owner?.photoData||null,playerNtrp:owner?.ntrpLevel??null,sport:request.sport,city:request.city,format:request.format,seats:request.seats||({individual:1,split:2,group:6})[request.format],members,joined:members.some(m=>m.id===viewer),startsAt:request.starts_at,endsAt:request.ends_at,courts:courtIds.map(id=>all.find(c=>c.id===id)).filter(Boolean).map(c=>({id:c.id,name:c.name,address:c.address})),note:request.note,createdAt:request.created_at};}
 async function body(req,maxLength=16384){let raw='';for await(const chunk of req){raw+=chunk;if(raw.length>maxLength)fail(413,'Слишком большой запрос');}try{return JSON.parse(raw||'{}');}catch{fail(400,'Неверный JSON');}}
 function str(v,max=100){return typeof v==='string'?v.trim().slice(0,max):'';}
 function date(v){const n=Date.parse(v);if(!Number.isFinite(n))fail(400,'Неверная дата');return new Date(n).toISOString();}
@@ -376,7 +381,7 @@ async function weatherHours(city='Краснодар'){
  weatherPending.set(city,pending);try{return await pending;}finally{weatherPending.delete(city);}
 }
 async function api(req,res,url){
-  if(url.pathname==='/api/config')return send(res,200,{demo:!process.env.BOT_TOKEN,botUsername:process.env.BOT_USERNAME||'',cities,version:'0.23.0'});
+  if(url.pathname==='/api/config')return send(res,200,{demo:!process.env.BOT_TOKEN,botUsername:process.env.BOT_USERNAME||'',cities,version:'0.23.1'});
   if(req.method==='GET'&&url.pathname==='/api/weather'){const city=url.searchParams.get('city')||'Краснодар';if(!cities.includes(city))fail(400,'Выберите город из списка');const hours=await weatherHours(city);return send(res,200,{hours,status:weatherCaches.get(city).status,city,source:'Open-Meteo'});}
   const identity=authenticate(req);addUser.run(identity.id,identity.name,identity.username,now());
   const me=userDTO(identity.id);
@@ -775,12 +780,13 @@ async function api(req,res,url){
   }
   if(req.method==='GET'&&url.pathname==='/api/training-requests'){
     const rows=db.prepare('SELECT * FROM training_requests WHERE cancelled_at IS NULL AND accepted_training_id IS NULL AND ends_at>? ORDER BY starts_at LIMIT 100').all(now());
-    return send(res,200,{requests:(me.role==='coach'&&!isAdmin(me.id)?rows.filter(r=>r.city===me.city&&me.coachSports.includes(r.sport)):rows).map(trainingRequestDTO)});
+    return send(res,200,{requests:(isAdmin(me.id)?rows:me.role==='coach'?rows.filter(r=>r.city===me.city&&me.coachSports.includes(r.sport)):rows.filter(r=>r.player_id===me.id||r.format!=='individual')).map(r=>trainingRequestDTO(r,me.id))});
   }
   if(req.method==='POST'&&url.pathname==='/api/training-requests'){
     if(me.role!=='player'&&!isAdmin(me.id))fail(403,'Заявку на тренировку создаёт игрок');
-    const b=await body(req,4000),sport=str(b.sport),format=str(b.format),ids=b.courtIds;
+    const b=await body(req,4000),sport=str(b.sport),format=str(b.format),ids=b.courtIds,seats=format==='individual'?1:format==='split'?2:Number(b.seats);
     if(!['tennis','padel'].includes(sport)||!['individual','split','group'].includes(format))fail(400,'Выберите вид спорта и формат');
+    if(format==='group'&&(!Number.isInteger(seats)||seats<3||seats>6))fail(400,'Выберите от 3 до 6 участников группы');
     if(!Array.isArray(ids)||ids.length<1||ids.length>10||ids.some(id=>typeof id!=='string'||id.length>100)||new Set(ids).size!==ids.length)fail(400,'Выберите от одного до десяти кортов');
     const all=allCourts(),selected=ids.map(id=>all.find(c=>c.id===id&&c.sport===sport));
     if(selected.some(c=>!c)||new Set(selected.map(c=>c.city||'Краснодар')).size!==1)fail(400,'Выберите корты одного города для этого вида спорта');
@@ -800,22 +806,51 @@ async function api(req,res,url){
     const dateLabel=new Date(startsAt).toLocaleDateString('ru-RU',{timeZone:'Europe/Moscow',day:'numeric',month:'short'}),from=new Date(startsAt).toLocaleTimeString('ru-RU',{timeZone:'Europe/Moscow',hour:'2-digit',minute:'2-digit'}),to=new Date(endsAt).toLocaleTimeString('ru-RU',{timeZone:'Europe/Moscow',hour:'2-digit',minute:'2-digit'});
     const message=`Игрок ${me.name} ищет ${format==='individual'?'индивидуальную тренировку':format==='split'?'сплит':'групповую тренировку'} · ${sport==='tennis'?'теннис':'падел'} · ${city} · ${dateLabel}, ${from}–${to} · ${selected.map(c=>c.name).join(', ')}`;
     db.exec('BEGIN');try{
-      db.prepare('INSERT INTO training_requests(id,player_id,sport,city,format,starts_at,ends_at,court_ids,note,created_at) VALUES(?,?,?,?,?,?,?,?,?,?)').run(id,me.id,sport,city,format,startsAt,endsAt,JSON.stringify(ids),note,now());
+      db.prepare('INSERT INTO training_requests(id,player_id,sport,city,format,starts_at,ends_at,court_ids,note,created_at,seats) VALUES(?,?,?,?,?,?,?,?,?,?,?)').run(id,me.id,sport,city,format,startsAt,endsAt,JSON.stringify(ids),note,now(),seats);
       for(const person of recipients)notifyUser(person.id,message,`training_request_${id}`);
       db.exec('COMMIT');
     }catch(error){db.exec('ROLLBACK');throw error;}
-    return send(res,201,{request:trainingRequestDTO(db.prepare('SELECT * FROM training_requests WHERE id=?').get(id))});
+    return send(res,201,{request:trainingRequestDTO(db.prepare('SELECT * FROM training_requests WHERE id=?').get(id),me.id)});
   }
   const playerTrainingRequest=url.pathname.match(/^\/api\/training-requests\/([a-f0-9-]{36})$/i);
   if(playerTrainingRequest&&req.method==='GET'){
     const found=db.prepare('SELECT * FROM training_requests WHERE id=? AND cancelled_at IS NULL AND accepted_training_id IS NULL AND ends_at>?').get(playerTrainingRequest[1],now());
-    if(!found)fail(404,'Заявка уже закрыта');return send(res,200,{request:trainingRequestDTO(found)});
+    if(!found)fail(404,'Заявка уже закрыта');
+    if(me.role==='player'&&found.format==='individual'&&found.player_id!==me.id&&!isAdmin(me.id))fail(403,'Индивидуальная заявка доступна только тренерам');
+    return send(res,200,{request:trainingRequestDTO(found,me.id)});
   }
   if(playerTrainingRequest&&req.method==='DELETE'){
     const found=db.prepare('SELECT * FROM training_requests WHERE id=?').get(playerTrainingRequest[1]);
     if(!found)fail(404,'Заявка не найдена');if(found.player_id!==me.id&&!isAdmin(me.id))fail(403,'Отменить заявку может только автор');
-    if(found.cancelled_at)fail(409,'Заявка уже отменена');
-    db.prepare('UPDATE training_requests SET cancelled_at=? WHERE id=?').run(now(),found.id);return send(res,200,{cancelled:true});
+    if(found.cancelled_at||found.accepted_training_id)fail(409,'Заявка уже закрыта');
+    db.prepare('UPDATE training_requests SET cancelled_at=? WHERE id=?').run(now(),found.id);
+    for(const member of requestMembers(found))if(member.id!==found.player_id)notifyUser(member.id,'Заявка на тренировку отменена игроком');
+    return send(res,200,{cancelled:true});
+  }
+  const requestMembership=url.pathname.match(/^\/api\/training-requests\/([a-f0-9-]{36})\/(join|leave)$/i);
+  if(req.method==='POST'&&requestMembership){
+    if(me.role!=='player'&&!isAdmin(me.id))fail(403,'Присоединиться может только игрок');
+    const request=db.prepare('SELECT * FROM training_requests WHERE id=?').get(requestMembership[1]);
+    if(!request||request.cancelled_at||request.accepted_training_id||Date.parse(request.ends_at)<=Date.now())fail(409,'Заявка уже закрыта');
+    if(request.format==='individual')fail(403,'Индивидуальная заявка не принимает других игроков');
+    if(request.player_id===me.id)fail(409,'Вы автор заявки');
+    db.exec('BEGIN IMMEDIATE');try{
+      const current=db.prepare('SELECT * FROM training_requests WHERE id=?').get(request.id);
+      if(current.cancelled_at||current.accepted_training_id||Date.parse(current.ends_at)<=Date.now())fail(409,'Заявка уже закрыта');
+      const existing=db.prepare('SELECT 1 FROM training_request_participants WHERE request_id=? AND user_id=?').get(request.id,me.id);
+      if(requestMembership[2]==='join'){
+        if(existing)fail(409,'Вы уже присоединились');
+        if(requestMembers(current).length>=current.seats)fail(409,'Свободных мест в заявке нет');
+        db.prepare('INSERT INTO training_request_participants VALUES(?,?,?)').run(request.id,me.id,now());
+        notifyUser(request.player_id,`${me.name} присоединился к вашей заявке на ${request.format==='split'?'сплит':'групповую тренировку'}`,`training_request_${request.id}`);
+      }else{
+        if(!existing)fail(409,'Вы не участвуете в заявке');
+        db.prepare('DELETE FROM training_request_participants WHERE request_id=? AND user_id=?').run(request.id,me.id);
+        notifyUser(request.player_id,`${me.name} вышел из заявки на тренировку`,`training_request_${request.id}`);
+      }
+      db.exec('COMMIT');
+    }catch(error){db.exec('ROLLBACK');throw error;}
+    return send(res,200,{request:trainingRequestDTO(db.prepare('SELECT * FROM training_requests WHERE id=?').get(request.id),me.id)});
   }
   const acceptTrainingRequest=url.pathname.match(/^\/api\/training-requests\/([a-f0-9-]{36})\/accept$/i);
   if(req.method==='POST'&&acceptTrainingRequest){
@@ -829,14 +864,18 @@ async function api(req,res,url){
     if(!court)fail(400,'Выберите один из кортов игрока');
     const start=date(b.startsAt),duration=Number(b.duration),price=Number(b.price),seats=request.format==='individual'?1:request.format==='split'?2:Number(b.seats);
     if(!validNewStart(start)||Date.parse(start)<Date.parse(request.starts_at)||Date.parse(start)+duration*60000>Date.parse(request.ends_at))fail(400,'Выберите время и длительность внутри интервала игрока, начиная со следующего полного часа');
-    if(![60,90,120].includes(duration)||!Number.isInteger(price)||price<0||price>100000||request.format==='group'&&(!Number.isInteger(seats)||seats<3||seats>6))fail(400,'Проверьте длительность, места и цену');
+    if(![60,90,120].includes(duration)||!Number.isInteger(price)||price<0||price>100000||request.format==='group'&&(!Number.isInteger(seats)||seats<3||seats>request.seats))fail(400,'Проверьте длительность, места и цену');
     const id=crypto.randomUUID();
     db.exec('BEGIN IMMEDIATE');try{
       const claimed=db.prepare('UPDATE training_requests SET accepted_training_id=? WHERE id=? AND accepted_training_id IS NULL AND cancelled_at IS NULL AND ends_at>?').run(id,request.id,now());
       if(!claimed.changes)fail(409,'Заявку уже принял другой тренер');
+      const members=requestMembers(request);
+      if(members.length>seats)fail(409,'Мест меньше числа участников заявки');
       db.prepare('INSERT INTO trainings(id,coach_id,sport,format,seats,court_id,starts_at,duration,avg_ntrp,price,note,created_at,ntrp_min,ntrp_max,requires_approval) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)').run(id,me.id,request.sport,request.format,seats,court.id,start,duration,null,price,request.note,now(),null,null,1);
-      db.prepare('INSERT INTO training_participants VALUES(?,?,?)').run(id,request.player_id,now());
-      notifyUser(request.player_id,`Тренер ${me.name} подтвердил вашу тренировку · ${court.name} · ${new Date(start).toLocaleString('ru-RU',{timeZone:'Europe/Moscow',day:'numeric',month:'short',hour:'2-digit',minute:'2-digit'})} · ${price} ₽/чел.`,`training_${id}`);
+      for(const member of members){
+        db.prepare('INSERT INTO training_participants VALUES(?,?,?)').run(id,member.id,now());
+        notifyUser(member.id,`Тренер ${me.name} подтвердил вашу тренировку · ${court.name} · ${new Date(start).toLocaleString('ru-RU',{timeZone:'Europe/Moscow',day:'numeric',month:'short',hour:'2-digit',minute:'2-digit'})} · ${price} ₽/чел.`,`training_${id}`);
+      }
       db.exec('COMMIT');
     }catch(error){db.exec('ROLLBACK');throw error;}
     processTrainingAds();
