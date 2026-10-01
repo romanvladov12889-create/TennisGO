@@ -503,3 +503,13 @@ button:active{transform:scale(.98)}
 /* Replace the entry-screen container layout once the stylesheet loads. */
 #app{display:block;min-height:100dvh;padding:0;text-align:initial}
 .app{width:100%;min-width:0}
+
+/* Larger logo on the left, city underneath notifications and profile. */
+.top{grid-template-columns:minmax(0,1fr) 124px;grid-template-rows:40px auto;gap:6px 10px;padding:10px 16px}
+.top .brand-logo{grid-column:1;grid-row:1 / 3;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:5px;width:190px;max-width:100%;height:78px}
+.top .brand-logo img.brand-symbol{width:80px;height:48px}
+.top .brand-logo img.brand-wordmark{width:174px;max-width:100%;height:auto}
+.top-actions{grid-column:2;grid-row:1;display:flex;align-items:center;justify-content:flex-end;gap:12px;min-width:0}
+.top .top-city-wrap{grid-column:2;grid-row:2;justify-self:end;width:124px;max-width:100%}
+.top .city-pill{width:100%;max-width:100%;padding:6px 9px;text-align:center;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.top .top-city-popover{left:auto;right:0;max-width:calc(100vw - 32px)}

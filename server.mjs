@@ -14,7 +14,7 @@ const mediaDir=path.join(path.dirname(dbPath),'profile-media');
 fs.mkdirSync(mediaDir,{recursive:true});
 const db = new DatabaseSync(dbPath);
 db.exec(`PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON;
- CREATE TABLE IF NOT EXISTS users(id TEXT PRIMARY KEY, name TEXT NOT NULL, username TEXT, tennis_rating INTEGER NOT NULL DEFAULT 1200, padel_rating INTEGER NOT NULL DEFAULT 1200, created_at TEXT NOT NULL);
+ CREATE TABLE IF NOT EXISTS users(id TEXT PRIMARY KEY, name TEXT NOT NULL, username TEXT, tennis_rating INTEGER NOT NULL DEFAULT 1000, padel_rating INTEGER NOT NULL DEFAULT 1000, created_at TEXT NOT NULL);
  CREATE TABLE IF NOT EXISTS games(id TEXT PRIMARY KEY, sport TEXT NOT NULL, city TEXT NOT NULL, venue TEXT NOT NULL, court_id TEXT, starts_at TEXT NOT NULL, duration INTEGER NOT NULL, level_min REAL NOT NULL, level_max REAL NOT NULL, seats INTEGER NOT NULL, price INTEGER NOT NULL, kind TEXT NOT NULL, note TEXT NOT NULL, creator_id TEXT NOT NULL REFERENCES users(id), result TEXT, result_by TEXT, result_confirmed INTEGER NOT NULL DEFAULT 0, created_at TEXT NOT NULL);
  CREATE TABLE IF NOT EXISTS participants(game_id TEXT NOT NULL REFERENCES games(id), user_id TEXT NOT NULL REFERENCES users(id), joined_at TEXT NOT NULL, PRIMARY KEY(game_id,user_id));
  CREATE TABLE IF NOT EXISTS bookings(id TEXT PRIMARY KEY, user_id TEXT NOT NULL REFERENCES users(id), coach_id TEXT NOT NULL, court_id TEXT NOT NULL, starts_at TEXT NOT NULL, created_at TEXT NOT NULL);
@@ -28,7 +28,7 @@ db.exec(`PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON;
  CREATE TABLE IF NOT EXISTS chat_messages(id TEXT PRIMARY KEY,kind TEXT NOT NULL,listing_id TEXT NOT NULL,sender_id TEXT NOT NULL REFERENCES users(id),peer_id TEXT NOT NULL REFERENCES users(id),body TEXT NOT NULL,created_at TEXT NOT NULL);
  CREATE INDEX IF NOT EXISTS chat_listing ON chat_messages(kind,listing_id,created_at);
  CREATE TABLE IF NOT EXISTS direct_messages(id TEXT PRIMARY KEY,sender_id TEXT NOT NULL REFERENCES users(id),recipient_id TEXT NOT NULL REFERENCES users(id),body TEXT NOT NULL,created_at TEXT NOT NULL,read_at TEXT);
- CREATE TABLE IF NOT EXISTS player_ratings(user_id TEXT NOT NULL REFERENCES users(id),sport TEXT NOT NULL,rating REAL NOT NULL DEFAULT 1500,rd REAL NOT NULL DEFAULT 350,volatility REAL NOT NULL DEFAULT 0.06,matches INTEGER NOT NULL DEFAULT 0,wins INTEGER NOT NULL DEFAULT 0,losses INTEGER NOT NULL DEFAULT 0,PRIMARY KEY(user_id,sport));
+ CREATE TABLE IF NOT EXISTS player_ratings(user_id TEXT NOT NULL REFERENCES users(id),sport TEXT NOT NULL,rating REAL NOT NULL DEFAULT 1000,rd REAL NOT NULL DEFAULT 350,volatility REAL NOT NULL DEFAULT 0.06,matches INTEGER NOT NULL DEFAULT 0,wins INTEGER NOT NULL DEFAULT 0,losses INTEGER NOT NULL DEFAULT 0,PRIMARY KEY(user_id,sport));
  CREATE TABLE IF NOT EXISTS rating_events(game_id TEXT NOT NULL REFERENCES games(id),user_id TEXT NOT NULL REFERENCES users(id),sport TEXT NOT NULL,previous REAL NOT NULL,current REAL NOT NULL,created_at TEXT NOT NULL,PRIMARY KEY(game_id,user_id));
  CREATE TABLE IF NOT EXISTS notifications(id TEXT PRIMARY KEY,user_id TEXT NOT NULL REFERENCES users(id),body TEXT NOT NULL,link TEXT,created_at TEXT NOT NULL,read_at TEXT);
  CREATE INDEX IF NOT EXISTS notifications_user ON notifications(user_id,created_at);
@@ -235,6 +235,26 @@ function processTrainingAds(reference=new Date()){
 }
 if(import.meta.url===`file://${process.argv[1]}`){const tick=()=>{for(const process of [processEventReminders,processMatchPrompts,processTrainingAds,processReputationPrompts])try{process();}catch(error){console.warn('Reminders unavailable:',error.message);}};setTimeout(tick,2000).unref();setInterval(tick,60000).unref();}
 function closePendingRequests(kind,id,message){const waiting=pendingRequests.all(kind,id);db.prepare("UPDATE join_requests SET status='rejected',resolved_at=? WHERE kind=? AND listing_id=? AND status='pending'").run(now(),kind,id);for(const user of waiting)notifyUser(user.id,message);}
+// Rebase existing results once, keeping wins, losses and event history.
+function migrateFixedRatings(){
+  const key='rating-fixed-1000-50-v1';
+  if(db.prepare('SELECT 1 FROM bot_state WHERE key=?').get(key))return;
+  db.exec('BEGIN IMMEDIATE');try{
+    const write=db.prepare('INSERT INTO player_ratings(user_id,sport,rating,rd,volatility,matches,wins,losses) VALUES(?,?,?,350,0.06,?,?,?) ON CONFLICT(user_id,sport) DO UPDATE SET rating=excluded.rating,rd=350,volatility=0.06,matches=excluded.matches,wins=excluded.wins,losses=excluded.losses');
+    const eventWrite=db.prepare('UPDATE rating_events SET previous=?,current=? WHERE game_id=? AND user_id=?');
+    for(const {id} of db.prepare('SELECT id FROM users').all())for(const sport of ['tennis','padel']){
+      const old=db.prepare('SELECT * FROM player_ratings WHERE user_id=? AND sport=?').get(id,sport);
+      const events=db.prepare('SELECT * FROM rating_events WHERE user_id=? AND sport=? ORDER BY created_at,game_id').all(id,sport);
+      const wins=Math.max(old?.wins||0,events.filter(e=>e.current>e.previous).length),losses=Math.max(old?.losses||0,events.filter(e=>e.current<e.previous).length);
+      let rating=1000+50*(wins-losses-events.reduce((sum,e)=>sum+Math.sign(e.current-e.previous),0));
+      for(const event of events){const previous=rating;rating+=50*Math.sign(event.current-event.previous);eventWrite.run(previous,rating,event.game_id,id);}
+      write.run(id,sport,rating,Math.max(old?.matches||0,events.length,wins+losses),wins,losses);
+      db.prepare(`UPDATE users SET ${sport==='tennis'?'tennis_rating':'padel_rating'}=? WHERE id=?`).run(rating,id);
+    }
+    db.prepare('INSERT INTO bot_state(key,value) VALUES(?,?)').run(key,now());db.exec('COMMIT');
+  }catch(error){db.exec('ROLLBACK');throw error;}
+}
+migrateFixedRatings();
 function ratingOf(id,sport){return db.prepare('SELECT rating,rd,volatility,matches,wins,losses FROM player_ratings WHERE user_id=? AND sport=?').get(id,sport)||initialRating();}
 function ratingSummary(id){return Object.fromEntries(['tennis','padel'].map(sport=>[sport,ratingOf(id,sport)]));}
 function applyMatchRating(game,members){
@@ -333,7 +353,7 @@ if(!process.env.BOT_TOKEN && db.prepare('SELECT COUNT(*) AS n FROM games').get()
   for(const [sport,courtId,seats,kind,price,hour] of samples){const start=new Date(date);start.setUTCHours(hour-3);const id=crypto.randomUUID(),court=allCourts().find(c=>c.id===courtId);db.prepare('INSERT INTO games(id,sport,city,venue,court_id,starts_at,duration,level_min,level_max,seats,price,kind,note,creator_id,created_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)').run(id,sport,'Краснодар',court.name,court.id,start.toISOString(),90,2.5,3.5,seats,price,kind,'Демо игра · проверьте свободные места',owner,new Date().toISOString());db.prepare('INSERT INTO participants VALUES(?,?,?)').run(id,owner,new Date().toISOString());}
 }
 const getUser = db.prepare("SELECT id,reputation_score AS reputation,reputation_count AS reputationCount,COALESCE(NULLIF(display_name,''),name) AS name,username,ntrp_level AS ntrpLevel,photo_data AS photoData,role,gender,playing_years AS playingYears,about,coach_years AS coachYears,coach_courts AS coachCourtsRaw,coach_achievements AS coachAchievements,avatar_id AS avatarId,COALESCE(NULLIF(city,''),'Краснодар') AS city,phone,telegram_contact AS telegramContact,coach_sports AS coachSportsRaw,preferred_sports AS preferredSportsRaw,registration_version>=2 AS registered,blocked_at AS blockedAt FROM users WHERE id=?");
-const addUser = db.prepare('INSERT INTO users(id,name,username,created_at) VALUES(?,?,?,?) ON CONFLICT(id) DO UPDATE SET name=excluded.name,username=excluded.username');
+const addUser = db.prepare('INSERT INTO users(id,name,username,created_at,tennis_rating,padel_rating) VALUES(?,?,?,?,1000,1000) ON CONFLICT(id) DO UPDATE SET name=excluded.name,username=excluded.username');
 const saveProfile=db.prepare('UPDATE users SET display_name=?,ntrp_level=?,photo_data=?,role=?,gender=?,playing_years=?,about=?,coach_years=?,coach_courts=?,coach_achievements=?,avatar_id=?,city=?,phone=?,telegram_contact=?,coach_sports=?,registered_at=COALESCE(registered_at,?),registration_version=2 WHERE id=?');
 function userDTO(id){const user=getUser.get(id);if(!user)return null;const {coachSportsRaw,coachCourtsRaw,preferredSportsRaw,...fields}=user;let coachSports=['tennis','padel'],coachCourts=[],preferredSports=[];try{if(coachSportsRaw)coachSports=JSON.parse(coachSportsRaw);if(coachCourtsRaw)coachCourts=JSON.parse(coachCourtsRaw);if(preferredSportsRaw)preferredSports=JSON.parse(preferredSportsRaw);}catch{}const admin=isAdmin(id),club=fields.role==='club'||admin?db.prepare('SELECT name,address,city,phone,sports,status,photo_data AS photoData,surface,opens_at AS opensAt,closes_at AS closesAt,hourly_price AS hourlyPrice FROM clubs WHERE owner_id=?').get(id):null;return {...fields,preferredSports:Array.isArray(preferredSports)?preferredSports:[],coachSports:fields.role==='coach'||admin?(coachSports.length?coachSports:['tennis','padel']):[],coachCourts:(fields.role==='coach'||admin&&fields.role!=='club')&&Array.isArray(coachCourts)?coachCourts:[],coachAchievements:fields.role==='coach'||admin&&fields.role!=='club'?fields.coachAchievements||'':'',club:club?{...club,sports:JSON.parse(club.sports)}:null,isAdmin:admin,ratings:ratingSummary(id)};}
 function isAdmin(id){return !!process.env.ADMIN_TELEGRAM_ID&&id===process.env.ADMIN_TELEGRAM_ID||!process.env.BOT_TOKEN&&!!process.env.ADMIN_DEMO_USER_ID&&id===process.env.ADMIN_DEMO_USER_ID;}
@@ -440,7 +460,7 @@ async function weatherHours(city='Краснодар'){
  weatherPending.set(city,pending);try{return await pending;}finally{weatherPending.delete(city);}
 }
 async function api(req,res,url){
-  if(url.pathname==='/api/config')return send(res,200,{demo:!process.env.BOT_TOKEN,botUsername:process.env.BOT_USERNAME||'',cities,version:'0.26.1'});
+  if(url.pathname==='/api/config')return send(res,200,{demo:!process.env.BOT_TOKEN,botUsername:process.env.BOT_USERNAME||'',cities,version:'0.27.0'});
   if(req.method==='GET'&&url.pathname==='/api/weather'){const city=url.searchParams.get('city')||'Краснодар';if(!cities.includes(city))fail(400,'Выберите город из списка');const hours=await weatherHours(city);return send(res,200,{hours,status:weatherCaches.get(city).status,city,source:'Open-Meteo'});}
   const identity=authenticate(req);addUser.run(identity.id,identity.name,identity.username,now());
   const me=userDTO(identity.id);
@@ -717,14 +737,14 @@ async function api(req,res,url){
   if(req.method==='GET'&&url.pathname==='/api/progress'){
     const monthKey=value=>{const parts=new Intl.DateTimeFormat('en-US',{timeZone:'Europe/Moscow',year:'numeric',month:'2-digit'}).formatToParts(new Date(value));return `${parts.find(p=>p.type==='year').value}-${parts.find(p=>p.type==='month').value}`;};
     const currentKey=monthKey(Date.now()),[year,month]=currentKey.split('-').map(Number);
-    const months=Array.from({length:5},(_,i)=>{const d=new Date(Date.UTC(year,month-1-4+i,1));return {key:d.toISOString().slice(0,7),label:new Intl.DateTimeFormat('ru-RU',{month:'short',timeZone:'UTC'}).format(d),games:0,trainings:0,rating:1500};});
+    const months=Array.from({length:5},(_,i)=>{const d=new Date(Date.UTC(year,month-1-4+i,1));return {key:d.toISOString().slice(0,7),label:new Intl.DateTimeFormat('ru-RU',{month:'short',timeZone:'UTC'}).format(d),games:0,trainings:0,rating:1000};});
     const byMonth=new Map(months.map(item=>[item.key,item]));
     const games=db.prepare("SELECT g.starts_at AS startsAt,g.duration FROM games g JOIN participants p ON p.game_id=g.id WHERE p.user_id=? AND g.sport='tennis' AND g.cancelled_at IS NULL AND g.starts_at<?").all(me.id,now()).filter(g=>Date.parse(g.startsAt)+g.duration*60000<=Date.now());
     const trainings=db.prepare("SELECT t.starts_at AS startsAt FROM trainings t JOIN training_participants p ON p.training_id=t.id JOIN completed_trainings c ON c.training_id=t.id WHERE p.user_id=? AND t.sport='tennis' AND t.cancelled_at IS NULL").all(me.id);
     for(const game of games){const item=byMonth.get(monthKey(game.startsAt));if(item)item.games++;}
     for(const training of trainings){const item=byMonth.get(monthKey(training.startsAt));if(item)item.trainings++;}
     const events=db.prepare("SELECT previous,current,created_at AS createdAt FROM rating_events WHERE user_id=? AND sport='tennis' ORDER BY created_at").all(me.id);
-    let score=1500,index=0;
+    let score=1000,index=0;
     for(const item of months){while(index<events.length&&monthKey(events[index].createdAt)<=item.key){score=events[index].current;index++;}item.rating=Math.round(score);}
     const firstInPeriod=events.find(event=>monthKey(event.createdAt)>=months[0].key);
     const ratingDelta=firstInPeriod?Math.round(ratingOf(me.id,'tennis').rating-firstInPeriod.previous):null;
