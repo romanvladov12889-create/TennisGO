@@ -1,0 +1,12 @@
+# Изображения акции Tennis GO
+
+Созданы встроенным imagegen на основе согласованного макета новости и четвёртого логотипа. Используется фотографический стиль, тёмно-зелёный мерч, графитовый худи, светло-серые фоны. PNG оригиналы оптимизированы в WebP для приложения. Тексты, баллы, наличие и кнопки рисуются HTML/CSS и обновляются из API.
+
+Файлы: public/assets/rewards-hero.webp, rewards-balls.webp, rewards-merch.webp, rewards-hoodie.webp, rewards-racket.webp. Общий размер около 110 КБ.
+
+Промпты:
+- Hero: Wide 3:2 landscape photo for a Tennis GO rewards campaign hero. Arrange a transparent tube of yellow tennis balls, a dark forest-green Tennis GO t-shirt, charcoal hoodie and black tennis racket on a green tennis court, entirely in RIGHT 55% of frame. LEFT 45% empty soft warm white haze for live UI text overlay. Soft defocused court background. Premium realistic product photography exactly like the product arrangement in the supplied UI mockup. No UI, no headings, no points, no buttons. Small accurate supplied ball logo and TENNIS GO on clothing. Products fully in frame.
+- Balls: Landscape 3:2 premium catalog photo: ONE transparent tube holding three bright yellow tennis balls lying horizontally on warm light grey studio surface, subtle shadows. Full tube centered with ample 12% safe margins. Small supplied Tennis GO ball symbol on tube. No UI, no labels, no prices.
+- Merch: Landscape 3:2 premium catalog photo: forest green TENNIS GO t-shirt displayed neatly upright alongside matching baseball cap in foreground on warm light grey studio background. Both objects fully visible, centered with 12% margin, white accurate supplied ball symbol on shirt and cap, small TENNIS GO lettering. Soft shadows. No UI or prices.
+- Hoodie: Landscape 3:2 premium catalog photo: charcoal hoodie displayed neatly upright alongside black sports duffel bag in foreground, warm light grey background. Both fully visible centered with 12% safe margins, white supplied tennis ball symbol and small TENNIS GO lettering. Soft shadows, realistic fabric. No UI, no prices.
+- Racket: Landscape 3:2 premium catalog photo: a professional black graphite TENNIS racket with subtle lime trim displayed diagonally across warm light grey surface. Entire handle and oval racket head fully visible, centered, soft shadow, accurate strings. 12% safe margins. No UI, no prices, no brand other than optional tiny Tennis GO.

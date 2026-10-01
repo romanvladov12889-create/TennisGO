@@ -18,6 +18,7 @@ test('server starts and serves its API and frontend from the exact Docker COPY c
   const script=`const {server,db}=await import(${JSON.stringify(pathToFileURL(path.join(temp,'server.mjs')).href)});
   try{await new Promise(r=>server.listen(0,'127.0.0.1',r));const base='http://127.0.0.1:'+server.address().port;
   const config=await fetch(base+'/api/config');if(config.status!==200)throw new Error('API unavailable');
+  for(const name of ['hero','balls','merch','hoodie','racket']){const image=await fetch(base+'/assets/rewards-'+name+'.webp');if(image.status!==200||image.headers.get('content-type')!=='image/webp'||(await image.arrayBuffer()).byteLength<1000)throw new Error('Prize image unavailable: '+name);}
   const index=await fetch(base+'/');if(index.status!==200)throw new Error('Frontend unavailable');
   if(!db.prepare("SELECT 1 FROM news WHERE id='tennis-go-rewards-v1'").get())throw new Error('Campaign news missing');
   }finally{await new Promise(r=>server.close(r));db.close();}`;
