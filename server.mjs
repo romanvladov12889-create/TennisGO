@@ -6,6 +6,7 @@ import { DatabaseSync } from 'node:sqlite';
 import { fileURLToPath } from 'node:url';
 import {initialRating,updateRating} from './rating.mjs';
 import {createRewards,campaignId} from './rewards.mjs';
+import {createWebAuth} from './web-auth.mjs';
 
 const root = path.dirname(fileURLToPath(import.meta.url));
 const publicDir = path.join(root, 'public');
@@ -174,7 +175,17 @@ if(firstTournamentSeed){
   const inserted=db.prepare('INSERT OR IGNORE INTO news(id,author_id,title,body,published_at,sport,image_path) VALUES(?,?,?,?,?,?,?)').run(tournamentId,'tennis-go-system','Турнир по теннису среди мужчин и женщин 🎾',tournamentBody,now(),'tennis','/assets/tennis-tournament-2026-10-04.jpg');
   if(inserted.changes)broadcast('Турнир по теннису 4 октября в Академии «Вопреки» — запись @aiidamar','news','tennis');
 }
+const webAuth=createWebAuth(db);
 const rewards=createRewards(db,{notify:notifyUser,admin:isAdmin});
+// Both browser and Telegram clients observe the same committed data revision.
+db.exec('CREATE TABLE IF NOT EXISTS app_sync(id INTEGER PRIMARY KEY CHECK(id=1),revision INTEGER NOT NULL); INSERT OR IGNORE INTO app_sync VALUES(1,0)');
+for(const table of ['games','participants','trainings','training_participants','training_requests','training_request_participants','join_requests','completed_trainings','court_reservations','clubs','friendships','direct_messages','chat_messages','notifications','news','player_ratings','game_feedback','training_reviews','reward_ledger','reward_claims']){
+ if(!db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name=?").get(table))continue;
+ for(const action of ['INSERT','UPDATE','DELETE'])db.exec(`CREATE TRIGGER IF NOT EXISTS sync_${table}_${action} AFTER ${action} ON ${table} BEGIN UPDATE app_sync SET revision=revision+1 WHERE id=1; END;`);
+}
+db.exec(`CREATE TRIGGER IF NOT EXISTS sync_users_profile AFTER UPDATE ON users WHEN NEW.name IS NOT OLD.name OR NEW.display_name IS NOT OLD.display_name OR NEW.role IS NOT OLD.role OR NEW.city IS NOT OLD.city OR NEW.ntrp_level IS NOT OLD.ntrp_level OR NEW.photo_data IS NOT OLD.photo_data OR NEW.blocked_at IS NOT OLD.blocked_at OR NEW.registration_version IS NOT OLD.registration_version OR NEW.about IS NOT OLD.about OR NEW.coach_sports IS NOT OLD.coach_sports OR NEW.preferred_sports IS NOT OLD.preferred_sports BEGIN UPDATE app_sync SET revision=revision+1 WHERE id=1; END;`);
+
+
 if(db.prepare('INSERT OR IGNORE INTO content_seeds(key,created_at) VALUES(?,?)').run(campaignId,now()).changes){
  db.prepare('INSERT OR IGNORE INTO users(id,name,username,created_at) VALUES(?,?,?,?)').run('tennis-go-system','Tennis GO','',now());
  db.prepare('INSERT OR IGNORE INTO news(id,author_id,title,body,published_at,sport,image_path) VALUES(?,?,?,?,?,?,?)').run(campaignId,'tennis-go-system','Играешь — получаешь призы 🎾','Матчи, новые соперники, тренировки и посещения партнёрских кортов теперь приносят бонусные баллы. Обменивайте их на призы Tennis GO!\n\n200 баллов — туба мячей, 5 призов.\n500 баллов — футболка или кепка, всего 3 приза.\n1 000 баллов — худи или спортивная сумка, всего 3 приза.\n10 000 баллов — профессиональная ракетка, 1 приз.\n\nПризы ограничены. Баллы списываются при обмене. Топ обновляется по заработанным баллам и не снижается при обмене. Нажмите «Баллы и призы», чтобы посмотреть задания, баланс и правила.',now(),'all',null);
@@ -424,7 +435,9 @@ function verifyInitData(raw){
   return {id:String(user.id),name:([user.first_name,user.last_name].filter(Boolean).join(' ')||'Игрок').slice(0,60),username:String(user.username||'').slice(0,40)};
 }
 function authenticate(req){
-  if(process.env.BOT_TOKEN){const token=req.headers.authorization||'';if(!token.startsWith('tma '))fail(401,'Откройте приложение через Telegram');return verifyInitData(token.slice(4));}
+  const token=req.headers.authorization||'';if(process.env.BOT_TOKEN&&token.startsWith('tma '))return verifyInitData(token.slice(4));
+  const web=webAuth.session(req,!['GET','HEAD'].includes(req.method));if(web)return web.identity;
+  if(process.env.BOT_TOKEN)fail(401,'Войдите на сайт или откройте мини-приложение Telegram');
   const id=String(req.headers['x-demo-user']||'').slice(0,60);
   if(!/^demo-[a-z0-9-]{8,50}$/i.test(id)) fail(401,'Нет тестового пользователя');
   let name='Игрок';try{name=decodeURIComponent(String(req.headers['x-demo-name']||'Игрок')).slice(0,60).trim()||'Игрок';}catch{}
@@ -485,7 +498,8 @@ async function weatherHours(city='Краснодар'){
  weatherPending.set(city,pending);try{return await pending;}finally{weatherPending.delete(city);}
 }
 async function api(req,res,url){
-  if(url.pathname==='/api/config')return send(res,200,{demo:!process.env.BOT_TOKEN,botUsername:process.env.BOT_USERNAME||'',cities,version:'0.28.2'});
+  const webResponse=await webAuth.route(req,res,url,body);if(webResponse!==null)return send(res,200,webResponse);
+  if(url.pathname==='/api/config')return send(res,200,{demo:!process.env.BOT_TOKEN,botUsername:process.env.BOT_USERNAME||'',cities,website:true,version:'0.29.0'});
   if(req.method==='GET'&&url.pathname==='/api/weather'){const city=url.searchParams.get('city')||'Краснодар';if(!cities.includes(city))fail(400,'Выберите город из списка');const hours=await weatherHours(city);return send(res,200,{hours,status:weatherCaches.get(city).status,city,source:'Open-Meteo'});}
   const identity=authenticate(req);addUser.run(identity.id,identity.name,identity.username,now());
   const me=userDTO(identity.id);
@@ -493,6 +507,7 @@ async function api(req,res,url){
   if(!me.blockedAt)db.prepare('INSERT OR IGNORE INTO activity_days VALUES(?,?)').run(me.id,new Intl.DateTimeFormat('en-CA',{timeZone:'Europe/Moscow',year:'numeric',month:'2-digit',day:'2-digit'}).format(new Date()));
   if(req.method==='GET'&&url.pathname==='/api/me')return send(res,200,{user:me});
   if(me.blockedAt&&!isAdmin(me.id))fail(403,'Ваш аккаунт заблокирован администратором');
+  if(req.method==='GET'&&url.pathname==='/api/sync')return send(res,200,db.prepare('SELECT revision FROM app_sync WHERE id=1').get());
   if(req.method==='GET'&&url.pathname==='/api/support'){
     const adminId=process.env.ADMIN_TELEGRAM_ID||(!process.env.BOT_TOKEN&&process.env.ADMIN_DEMO_USER_ID);
     const admin=adminId?userDTO(adminId):null;
@@ -596,6 +611,7 @@ async function api(req,res,url){
   }
   if(req.method==='GET'&&url.pathname==='/api/registration-courts')return send(res,200,{courts:allCourts().map(({id,name,address,city,sport})=>({id,name,address,city,sport}))});
   if(!me.registered)fail(403,'Завершите регистрацию');
+  if(url.pathname==='/api/web-auth/password'&&req.method==='POST')return send(res,200,await webAuth.password(req,res,me.id,await body(req),!!process.env.BOT_TOKEN&&String(req.headers.authorization||'').startsWith('tma ')));
   const rewardResponse=await rewards.route(req,url,me,body);if(rewardResponse!==null)return send(res,200,rewardResponse);
   if(url.pathname==='/api/preferences/sports'&&req.method==='PATCH'){
     const selected=(await body(req)).sports;
@@ -1308,6 +1324,7 @@ async function botMethod(method,payload,timeout=8000){
   const result=await response.json();if(!result.ok)throw Error(`${method}: ${result.description||response.status}`);return result.result;
 }
 async function handleBotUpdate(update){
+  if(await webAuth.bot(update,botMethod))return;
   const reply=update.message;
   if(reply?.text&&reply.chat?.type==='private'&&String(reply.chat.id)===String(reply.from?.id)&&reply.reply_to_message?.message_id){
     const prompt=db.prepare('SELECT * FROM feedback_comment_prompts WHERE chat_id=? AND message_id=? AND user_id=?').get(String(reply.chat.id),reply.reply_to_message.message_id,String(reply.from.id));
@@ -1398,4 +1415,4 @@ async function botPollLoop(){
   finally{setTimeout(botPollLoop,1500).unref();}
 }
 if(import.meta.url===`file://${process.argv[1]}`){server.listen(Number(process.env.PORT||3000),'0.0.0.0',()=>console.log(`Tennis GO Mini App: http://localhost:${process.env.PORT||3000} (${process.env.BOT_TOKEN?'Telegram':'demo'})`));if(process.env.BOT_TOKEN)setTimeout(botPollLoop,1500).unref();}
-export {server,db,rewards,verifyInitData,sendNextBotMessage,processEventReminders,processTrainingAds,processMatchPrompts,processReputationPrompts,recordGameFeedback,recordMatchVote,handleBotUpdate,notificationButton,earliestStart};
+export {server,db,rewards,webAuth,verifyInitData,sendNextBotMessage,processEventReminders,processTrainingAds,processMatchPrompts,processReputationPrompts,recordGameFeedback,recordMatchVote,handleBotUpdate,notificationButton,earliestStart};
