@@ -72,6 +72,7 @@ db.exec(`
  CREATE TABLE IF NOT EXISTS game_feedback(game_id TEXT NOT NULL REFERENCES games(id),user_id TEXT NOT NULL REFERENCES users(id),score INTEGER NOT NULL CHECK(score BETWEEN 1 AND 5),body TEXT NOT NULL,created_at TEXT NOT NULL,PRIMARY KEY(game_id,user_id));
  CREATE TABLE IF NOT EXISTS reputation_reviews(kind TEXT NOT NULL CHECK(kind IN ('game','training')),listing_id TEXT NOT NULL,evaluator_id TEXT NOT NULL REFERENCES users(id),target_id TEXT NOT NULL REFERENCES users(id),score INTEGER NOT NULL CHECK(score BETWEEN 1 AND 5),created_at TEXT NOT NULL,PRIMARY KEY(kind,listing_id,evaluator_id,target_id),CHECK(evaluator_id<>target_id));
  CREATE INDEX IF NOT EXISTS reputation_target ON reputation_reviews(target_id);
+ CREATE TABLE IF NOT EXISTS feedback_comment_prompts(chat_id TEXT NOT NULL,message_id INTEGER NOT NULL,game_id TEXT NOT NULL REFERENCES games(id),user_id TEXT NOT NULL REFERENCES users(id),PRIMARY KEY(chat_id,message_id));
  CREATE TABLE IF NOT EXISTS reputation_prompts(game_id TEXT NOT NULL REFERENCES games(id),user_id TEXT NOT NULL REFERENCES users(id),prompted_at TEXT NOT NULL,PRIMARY KEY(game_id,user_id));
  CREATE TRIGGER IF NOT EXISTS reputation_added AFTER INSERT ON reputation_reviews BEGIN
  UPDATE users SET reputation_score=(SELECT AVG(score) FROM reputation_reviews WHERE target_id=NEW.target_id),reputation_count=(SELECT COUNT(*) FROM reputation_reviews WHERE target_id=NEW.target_id) WHERE id=NEW.target_id; END;
@@ -232,7 +233,7 @@ function processTrainingAds(reference=new Date()){
     }
   }
 }
-if(import.meta.url===`file://${process.argv[1]}`){const tick=()=>{try{processEventReminders();processMatchPrompts();processTrainingAds();processReputationPrompts();}catch(error){console.warn('Reminders unavailable:',error.message);}};setTimeout(tick,2000).unref();setInterval(tick,60000).unref();}
+if(import.meta.url===`file://${process.argv[1]}`){const tick=()=>{for(const process of [processEventReminders,processMatchPrompts,processTrainingAds,processReputationPrompts])try{process();}catch(error){console.warn('Reminders unavailable:',error.message);}};setTimeout(tick,2000).unref();setInterval(tick,60000).unref();}
 function closePendingRequests(kind,id,message){const waiting=pendingRequests.all(kind,id);db.prepare("UPDATE join_requests SET status='rejected',resolved_at=? WHERE kind=? AND listing_id=? AND status='pending'").run(now(),kind,id);for(const user of waiting)notifyUser(user.id,message);}
 function ratingOf(id,sport){return db.prepare('SELECT rating,rd,volatility,matches,wins,losses FROM player_ratings WHERE user_id=? AND sport=?').get(id,sport)||initialRating();}
 function ratingSummary(id){return Object.fromEntries(['tennis','padel'].map(sport=>[sport,ratingOf(id,sport)]));}
@@ -384,14 +385,34 @@ function authenticate(req){
   let name='Игрок';try{name=decodeURIComponent(String(req.headers['x-demo-name']||'Игрок')).slice(0,60).trim()||'Игрок';}catch{}
   return {id,name,username:''};
 }
+if(!db.prepare('PRAGMA table_info(reputation_prompts)').all().some(c=>c.name==='keyboard_version'))db.exec('ALTER TABLE reputation_prompts ADD COLUMN keyboard_version INTEGER NOT NULL DEFAULT 0');
+function feedbackKeyboard(gameId){
+  const open=notificationButton(`feedback_${gameId}`);
+  return {inline_keyboard:[[1,2,3,4,5].map(score=>({text:String(score),callback_data:`gf:${gameId}:${score}`})),...(open?[[{...open,text:'Оценить в приложении'}]]:[])]};
+}
+function recordGameFeedback(gameId,userId,score,comment=''){
+  const user=getUser.get(userId);if(!user?.registered||user.blockedAt)fail(403,'Профиль недоступен');
+  const game=getGame.get(gameId);if(!game)fail(404,'Игра не найдена');
+  const members=getMembers.all(game.id);
+  if(game.cancelled_at||Date.parse(game.starts_at)+game.duration*60000>Date.now()||!members.some(m=>m.id===userId)||members.length<2)fail(403,'Оценка доступна участникам после окончания игры');
+  if(!Number.isInteger(score)||score<1||score>5)fail(400,'Оцените игру от 1 до 5');
+  if(db.prepare('SELECT 1 FROM game_feedback WHERE game_id=? AND user_id=?').get(game.id,userId))fail(409,'Вы уже оценили эту игру');
+  db.exec('BEGIN IMMEDIATE');try{
+    db.prepare('INSERT INTO game_feedback VALUES(?,?,?,?,?)').run(game.id,userId,score,str(comment,500),now());
+    const insert=db.prepare("INSERT INTO reputation_reviews VALUES('game',?,?,?,?,?)");
+    for(const member of members)if(member.id!==userId)insert.run(game.id,userId,member.id,score,now());
+    db.exec('COMMIT');
+  }catch(error){db.exec('ROLLBACK');throw error;}
+  return game;
+}
 function averageReputation(members){return members.length?members.reduce((sum,m)=>sum+(m.reputation??5),0)/members.length:null;}
 function processReputationPrompts(reference=new Date()){
   const cutoff=new Date(reference.getTime()-30*86400000).toISOString();
   const games=db.prepare("SELECT g.* FROM games g WHERE g.cancelled_at IS NULL AND g.starts_at>? AND julianday(g.starts_at)+g.duration/1440.0<=julianday(?) AND (SELECT COUNT(*) FROM participants WHERE game_id=g.id)>=2 ORDER BY g.starts_at DESC LIMIT 1000").all(cutoff,reference.toISOString());
-  const prompted=db.prepare('INSERT OR IGNORE INTO reputation_prompts VALUES(?,?,?)');
+  const prompted=db.prepare('INSERT INTO reputation_prompts(game_id,user_id,prompted_at,keyboard_version) VALUES(?,?,?,1) ON CONFLICT(game_id,user_id) DO UPDATE SET prompted_at=excluded.prompted_at,keyboard_version=1 WHERE reputation_prompts.keyboard_version<1');
   for(const game of games)for(const member of getMembers.all(game.id)){
     const user=userDTO(member.id);if(!user?.registered||user.blockedAt||db.prepare('SELECT 1 FROM game_feedback WHERE game_id=? AND user_id=?').get(game.id,member.id))continue;
-    db.exec('BEGIN');try{if(prompted.run(game.id,member.id,now()).changes)notifyUser(member.id,`Оцените игру от 1 до 5 · ${game.venue}. Поставьте 1, если оппонент не пришёл на игру.`,`game_${game.id}`);db.exec('COMMIT');}catch(error){db.exec('ROLLBACK');throw error;}
+    db.exec('BEGIN');try{if(prompted.run(game.id,member.id,now()).changes)notifyUser(member.id,`Оцените игру от 1 до 5 · ${game.venue} · ${new Date(game.starts_at).toLocaleString('ru-RU',{timeZone:'Europe/Moscow',day:'numeric',month:'short',hour:'2-digit',minute:'2-digit'})}. Поставьте 1, если оппонент не пришёл на игру.`,`feedback_${game.id}`,feedbackKeyboard(game.id));db.exec('COMMIT');}catch(error){db.exec('ROLLBACK');throw error;}
   }
 }
 function gameDTO(game,viewer){const members=getMembers.all(game.id).map((m,i)=>{const u=userDTO(m.id);return {...m,name:publicName(u),reputation:u.reputation,reputationCount:u.reputationCount,team:i%2===0?'A':'B'};}),court=allCourts().find(c=>c.id===game.court_id),creator=userDTO(game.creator_id),doubles=game.seats===4;const confirmations=doubles?db.prepare('SELECT user_id AS userId,phase FROM match_confirmations WHERE game_id=?').all(game.id):[];return {id:game.id,sport:game.sport,city:game.city,venue:game.venue,courtId:game.court_id,courtAddress:court?.address||'',startsAt:game.starts_at,duration:game.duration,levelMin:game.level_min,levelMax:game.level_max,seats:game.seats,price:game.price,kind:game.kind,note:game.note,courtReserved:!!game.court_reserved,friendsOnly:!!game.friends_only,seriesId:game.series_id||null,creatorId:game.creator_id,creatorName:publicName(creator),creatorReputation:creator?.reputation??5,reputation:averageReputation(members),feedbackSubmitted:!!db.prepare('SELECT 1 FROM game_feedback WHERE game_id=? AND user_id=?').get(game.id,viewer),creatorAvatarId:creator?.avatarId||null,creatorPhotoData:creator?.photoData||null,creatorGender:creator?.gender||null,creatorNtrp:creator?.ntrpLevel??null,creatorRole:creator?.role||null,opponentGender:game.opponent_gender,cancelled:!!game.cancelled_at,members,joined:members.some(m=>m.id===viewer),result:game.result,resultBy:game.result_by,resultConfirmed:!!game.result_confirmed,resultDisputed:!!game.result_disputed_at,resultDisputeReason:game.result_dispute_reason||null,attendanceBy:game.attendance_by,attendanceDone:doubles?confirmations.some(c=>c.userId===viewer&&c.phase==='attendance'):game.attendance_by===viewer||!!game.attendance_confirmed_at&&members.some(m=>m.id===viewer),attendanceCount:doubles?confirmations.filter(c=>c.phase==='attendance').length:(game.attendance_confirmed_at?2:game.attendance_at?1:0),attendanceConfirmed:doubles?confirmations.filter(c=>c.phase==='attendance').length===4:!!game.attendance_confirmed_at,resultAcknowledged:doubles?confirmations.some(c=>c.userId===viewer&&c.phase==='result'):false,resultConfirmationCount:doubles?confirmations.filter(c=>c.phase==='result').length:(game.result_confirmed?2:game.result?1:0),absenceBy:game.absence_by,absenceReason:game.absence_reason,absenceDisputed:!!game.absence_disputed_at,courtType:court?.courtType||null,voteStatus:db.prepare('SELECT status FROM match_polls WHERE game_id=?').get(game.id)?.status||null,myVote:db.prepare('SELECT choice FROM match_votes WHERE game_id=? AND user_id=?').get(game.id,viewer)?.choice||null,voteCount:db.prepare('SELECT COUNT(*) AS n FROM match_votes WHERE game_id=?').get(game.id).n,...requestState('game',game.id,viewer,game)};}
@@ -419,7 +440,7 @@ async function weatherHours(city='Краснодар'){
  weatherPending.set(city,pending);try{return await pending;}finally{weatherPending.delete(city);}
 }
 async function api(req,res,url){
-  if(url.pathname==='/api/config')return send(res,200,{demo:!process.env.BOT_TOKEN,botUsername:process.env.BOT_USERNAME||'',cities,version:'0.26.0'});
+  if(url.pathname==='/api/config')return send(res,200,{demo:!process.env.BOT_TOKEN,botUsername:process.env.BOT_USERNAME||'',cities,version:'0.26.1'});
   if(req.method==='GET'&&url.pathname==='/api/weather'){const city=url.searchParams.get('city')||'Краснодар';if(!cities.includes(city))fail(400,'Выберите город из списка');const hours=await weatherHours(city);return send(res,200,{hours,status:weatherCaches.get(city).status,city,source:'Open-Meteo'});}
   const identity=authenticate(req);addUser.run(identity.id,identity.name,identity.username,now());
   const me=userDTO(identity.id);
@@ -1053,18 +1074,7 @@ async function api(req,res,url){
   }
   const feedbackMatch=url.pathname.match(/^\/api\/games\/([a-f0-9-]{36})\/feedback$/i);
   if(req.method==='POST'&&feedbackMatch){
-    const game=getGame.get(feedbackMatch[1]);if(!game)fail(404,'Игра не найдена');
-    const members=getMembers.all(game.id);
-    if(game.cancelled_at||Date.parse(game.starts_at)+game.duration*60000>Date.now()||!members.some(m=>m.id===me.id)||members.length<2)fail(403,'Оценка доступна участникам после окончания игры');
-    const b=await body(req,4000),score=Number(b.score),comment=str(b.comment,500);
-    if(!Number.isInteger(score)||score<1||score>5)fail(400,'Оцените игру от 1 до 5');
-    if(db.prepare('SELECT 1 FROM game_feedback WHERE game_id=? AND user_id=?').get(game.id,me.id))fail(409,'Вы уже оценили эту игру');
-    db.exec('BEGIN');try{
-      db.prepare('INSERT INTO game_feedback VALUES(?,?,?,?,?)').run(game.id,me.id,score,comment,now());
-      const insert=db.prepare("INSERT INTO reputation_reviews VALUES('game',?,?,?,?,?)");
-      for(const member of members)if(member.id!==me.id)insert.run(game.id,me.id,member.id,score,now());
-      db.exec('COMMIT');
-    }catch(error){db.exec('ROLLBACK');throw error;}
+    const b=await body(req,4000),game=recordGameFeedback(feedbackMatch[1],me.id,Number(b.score),b.comment);
     return send(res,200,{game:gameDTO(game,me.id),user:userDTO(me.id)});
   }
   if(req.method==='GET'&&url.pathname==='/api/match-polls'){
@@ -1234,7 +1244,39 @@ async function botMethod(method,payload,timeout=8000){
   const result=await response.json();if(!result.ok)throw Error(`${method}: ${result.description||response.status}`);return result.result;
 }
 async function handleBotUpdate(update){
+  const reply=update.message;
+  if(reply?.text&&reply.chat?.type==='private'&&String(reply.chat.id)===String(reply.from?.id)&&reply.reply_to_message?.message_id){
+    const prompt=db.prepare('SELECT * FROM feedback_comment_prompts WHERE chat_id=? AND message_id=? AND user_id=?').get(String(reply.chat.id),reply.reply_to_message.message_id,String(reply.from.id));
+    if(prompt){
+      const user=getUser.get(prompt.user_id),comment=str(reply.text,500);
+      if(user?.registered&&!user.blockedAt&&comment){
+        db.exec('BEGIN IMMEDIATE');try{
+          db.prepare("UPDATE game_feedback SET body=? WHERE game_id=? AND user_id=? AND body=''").run(comment,prompt.game_id,prompt.user_id);
+          db.prepare('DELETE FROM feedback_comment_prompts WHERE chat_id=? AND message_id=?').run(prompt.chat_id,prompt.message_id);
+          db.exec('COMMIT');
+        }catch(error){db.exec('ROLLBACK');throw error;}
+        await botMethod('sendMessage',{chat_id:reply.chat.id,text:'Комментарий к игре сохранён. Спасибо за отзыв!'});
+      }
+    }
+    return;
+  }
   const query=update.callback_query;if(!query)return;
+  const feedback=/^gf:([a-f0-9-]{36}):([1-5])$/i.exec(query.data||'');
+  if(feedback){
+    let message='Не удалось записать оценку',saved=false;
+    try{
+      if(String(query.message?.chat?.id)!==String(query.from?.id))fail(403,'Оценка доступна только в личном чате');
+      recordGameFeedback(feedback[1],String(query.from.id),Number(feedback[2]));
+      message=`Оценка ${feedback[2]} из 5 сохранена. Репутация обновлена`;saved=true;
+    }catch(error){message=error.message;}
+    await botMethod('answerCallbackQuery',{callback_query_id:query.id,text:message.slice(0,190),show_alert:false});
+    if(saved){
+      if(query.message?.message_id)await botMethod('editMessageReplyMarkup',{chat_id:query.message.chat.id,message_id:query.message.message_id,reply_markup:{inline_keyboard:[]}}).catch(()=>{});
+      const receipt=await botMethod('sendMessage',{chat_id:query.from.id,text:`Оценка ${feedback[2]} из 5 учтена в репутации остальных участников.\nХотите добавить комментарий? Ответьте на это сообщение (до 500 символов). Это необязательно.`,reply_markup:{force_reply:true,input_field_placeholder:'Как прошла игра?'}}).catch(()=>null);
+      if(receipt?.message_id)db.prepare('INSERT OR IGNORE INTO feedback_comment_prompts VALUES(?,?,?,?)').run(String(query.from.id),receipt.message_id,feedback[1],String(query.from.id));
+    }
+    return;
+  }
   const signup=/^tj:([a-f0-9-]{36})$/i.exec(query.data||''),decision=/^t([ar]):([a-f0-9-]{36}):(\d{1,20})$/i.exec(query.data||'');
   if(signup||decision){
     let message='Не удалось обработать запись',done=false;
@@ -1283,7 +1325,7 @@ async function botPollLoop(){
   if(!process.env.BOT_TOKEN)return;
   try{
     const offset=Number(db.prepare("SELECT value FROM bot_state WHERE key='offset'").get()?.value||0);
-    const updates=await botMethod('getUpdates',{offset,timeout:20,allowed_updates:['callback_query']},26000);
+    const updates=await botMethod('getUpdates',{offset,timeout:20,allowed_updates:['callback_query','message']},26000);
     for(const update of updates){
       try{await handleBotUpdate(update);}catch(error){console.warn('Telegram callback unavailable:',error.message);}
       db.prepare("INSERT INTO bot_state(key,value) VALUES('offset',?) ON CONFLICT(key) DO UPDATE SET value=excluded.value").run(String(update.update_id+1));
@@ -1292,4 +1334,4 @@ async function botPollLoop(){
   finally{setTimeout(botPollLoop,1500).unref();}
 }
 if(import.meta.url===`file://${process.argv[1]}`){server.listen(Number(process.env.PORT||3000),'0.0.0.0',()=>console.log(`Tennis GO Mini App: http://localhost:${process.env.PORT||3000} (${process.env.BOT_TOKEN?'Telegram':'demo'})`));if(process.env.BOT_TOKEN)setTimeout(botPollLoop,1500).unref();}
-export {server,db,verifyInitData,sendNextBotMessage,processEventReminders,processTrainingAds,processMatchPrompts,processReputationPrompts,recordMatchVote,handleBotUpdate,notificationButton,earliestStart};
+export {server,db,verifyInitData,sendNextBotMessage,processEventReminders,processTrainingAds,processMatchPrompts,processReputationPrompts,recordGameFeedback,recordMatchVote,handleBotUpdate,notificationButton,earliestStart};

@@ -486,3 +486,20 @@ button:active{transform:scale(.98)}
 
 /* Approved graphite logo, variant 4. */
 .brand-logo{display:flex;align-items:center;gap:8px;flex:0 0 164px;width:164px;height:52px;overflow:visible;mix-blend-mode:multiply}.brand-logo img{position:static;display:block;max-width:100%;transform:none;object-fit:contain}.brand-logo img.brand-symbol{width:54px;height:43px;flex:none}.brand-logo img.brand-wordmark{width:102px;height:auto;flex:none}.top{min-height:76px}@media(max-width:360px){.brand-logo{flex-basis:145px;width:145px;height:47px;gap:7px}.brand-logo img.brand-symbol{width:48px;height:37px}.brand-logo img.brand-wordmark{width:90px;height:auto}.top{min-height:70px}}
+
+/* Compact header: brand and actions on first row, city on its own row. */
+.top{display:grid;grid-template-columns:minmax(0,1fr) auto auto;grid-template-rows:auto auto;align-items:center;gap:6px 8px;padding:10px 16px 9px;min-height:0}
+.top .top-spacer{display:none}
+.top .brand-logo{grid-column:1;grid-row:1;width:164px;max-width:100%;height:43px;gap:8px;min-width:0}
+.top .brand-logo img.brand-symbol{width:54px;height:43px;flex:none}
+.top .brand-logo img.brand-wordmark{width:102px;max-width:calc(100% - 62px);height:auto;flex:none}
+.top .notification-button{grid-column:2;grid-row:1;min-width:40px;width:40px;height:36px}
+.top .top-avatar,.top>.avatar{grid-column:3;grid-row:1;justify-self:end}
+.top .top-city-wrap{grid-column:1 / -1;grid-row:2;justify-self:start;max-width:100%;min-width:0}
+.top .city-pill{display:block;max-width:100%;font-size:11px;padding:5px 10px;white-space:normal;text-align:left;overflow-wrap:anywhere}
+.top .top-city-popover{left:0;right:auto;max-width:calc(100vw - 32px)}
+.vote-modal>.button.light{margin-top:12px}.vote-modal>[data-vote-later]{display:block;margin:12px auto}
+
+/* Replace the entry-screen container layout once the stylesheet loads. */
+#app{display:block;min-height:100dvh;padding:0;text-align:initial}
+.app{width:100%;min-width:0}
