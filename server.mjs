@@ -6,7 +6,7 @@ import { DatabaseSync } from 'node:sqlite';
 import { fileURLToPath } from 'node:url';
 import {initialRating,updateRating} from './rating.mjs';
 import {createRewards,campaignId} from './rewards.mjs';
-import {createWebAuth} from './web-auth.mjs';
+import {createWebAuth,emailConfigured} from './web-auth.mjs';
 
 const root = path.dirname(fileURLToPath(import.meta.url));
 const publicDir = path.join(root, 'public');
@@ -499,13 +499,13 @@ async function weatherHours(city='Краснодар'){
 }
 async function api(req,res,url){
   const webResponse=await webAuth.route(req,res,url,body);if(webResponse!==null)return send(res,200,webResponse);
-  if(url.pathname==='/api/config')return send(res,200,{demo:!process.env.BOT_TOKEN,botUsername:process.env.BOT_USERNAME||'',cities,website:true,version:'0.29.0'});
+  if(url.pathname==='/api/config')return send(res,200,{demo:!process.env.BOT_TOKEN,botUsername:process.env.BOT_USERNAME||'',cities,website:true,emailRegistration:emailConfigured(),version:'0.30.0'});
   if(req.method==='GET'&&url.pathname==='/api/weather'){const city=url.searchParams.get('city')||'Краснодар';if(!cities.includes(city))fail(400,'Выберите город из списка');const hours=await weatherHours(city);return send(res,200,{hours,status:weatherCaches.get(city).status,city,source:'Open-Meteo'});}
   const identity=authenticate(req);addUser.run(identity.id,identity.name,identity.username,now());
   const me=userDTO(identity.id);
   db.prepare("UPDATE users SET last_seen_at=? WHERE id=? AND (last_seen_at IS NULL OR last_seen_at<?)").run(now(),me.id,new Date(Date.now()-60000).toISOString());
   if(!me.blockedAt)db.prepare('INSERT OR IGNORE INTO activity_days VALUES(?,?)').run(me.id,new Intl.DateTimeFormat('en-CA',{timeZone:'Europe/Moscow',year:'numeric',month:'2-digit',day:'2-digit'}).format(new Date()));
-  if(req.method==='GET'&&url.pathname==='/api/me')return send(res,200,{user:me});
+  if(req.method==='GET'&&url.pathname==='/api/me')return send(res,200,{user:{...me,email:db.prepare('SELECT email FROM web_emails WHERE user_id=?').get(me.id)?.email||null}});
   if(me.blockedAt&&!isAdmin(me.id))fail(403,'Ваш аккаунт заблокирован администратором');
   if(req.method==='GET'&&url.pathname==='/api/sync')return send(res,200,db.prepare('SELECT revision FROM app_sync WHERE id=1').get());
   if(req.method==='GET'&&url.pathname==='/api/support'){
@@ -589,7 +589,7 @@ async function api(req,res,url){
     if(!cities.includes(city))fail(400,'Выберите город из списка');
     if(phone&&(!/^[+\d()\-\s]+$/.test(phone)||phone.replace(/\D/g,'').length<10||phone.replace(/\D/g,'').length>15))fail(400,'Проверьте номер телефона');
     if(telegramContact&&!/^[a-zA-Z][a-zA-Z0-9_]{4,31}$/.test(telegramContact))fail(400,'Укажите Telegram username без ссылки');
-    if((!me.registered||me.role!=='coach'&&b.role==='coach')&&(!phone||b.role==='coach'&&!telegramContact))fail(400,b.role==='coach'?'Укажите телефон и Telegram тренера':'Укажите телефон для бронирования кортов');
+    if((!me.registered||me.role!=='coach'&&b.role==='coach')&&!phone)fail(400,'Укажите телефон для связи и бронирования кортов');
     const coachSports=b.role==='coach'||isAdmin(me.id)?(b.coachSports===undefined?['tennis','padel']:b.coachSports):[];
     if(!Array.isArray(coachSports)||b.role==='coach'&&coachSports.length===0||coachSports.length>2||coachSports.some(s=>!['tennis','padel'].includes(s))||new Set(coachSports).size!==coachSports.length)fail(400,'Выберите теннис, падел или оба вида спорта');
     const coachCourts=b.role==='coach'||isAdmin(me.id)?b.coachCourts??[]:[];

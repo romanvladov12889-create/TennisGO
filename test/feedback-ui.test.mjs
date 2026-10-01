@@ -69,3 +69,11 @@ test('reward polling keeps edited forms and avoids parallel requests',async()=>{
  const {run,intervals}=ui();assert.ok(intervals.some(i=>i.fn.name==='pollRewards'));run("state.form='rewards';globalThis.renders=0;render=()=>renders++;globalThis.calls=0;api=()=>{calls++;return new Promise(r=>globalThis.finishReward=r)}");
  const first=run('pollRewards()');await run('pollRewards()');assert.equal(run('calls'),1);run("document.activeElement={tagName:'INPUT'};finishReward({id:'tennis-go-rewards-v1',leaders:[]})");await first;assert.equal(run('renders'),0);run("document.activeElement=null;api=async()=>({id:'tennis-go-rewards-v1',leaders:[]})");await run('pollRewards()');assert.equal(run('renders'),1);
 });
+
+test('email registration and recovery screens lead to code verification without requiring Telegram',()=>{
+ const {run,app}=ui();run('state.config={emailRegistration:true};webEntry()');assert.match(app.innerHTML,/data-email-register/);assert.match(app.innerHTML,/data-email-reset/);assert.match(app.innerHTML,/Email или логин/);
+ run("emailEntry('register')");assert.match(app.innerHTML,/email-request-form/);assert.match(app.innerHTML,/Telegram не обязателен/);
+ run("emailFlow.email='player@example.com';emailEntry('register',true)");assert.match(app.innerHTML,/email-verify-form/);assert.match(app.innerHTML,/one-time-code/);assert.match(app.innerHTML,/player@example.com/);
+ run("emailEntry('reset')");assert.match(app.innerHTML,/Восстановить пароль/);
+ run("state.registrationRole='coach'");const form=run("identityFields({role:'coach'},true)");assert.ok(!/name="telegramContact"[^>]*required/.test(form));
+});

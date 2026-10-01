@@ -8,4 +8,4 @@ if (launch && !window.Telegram?.WebApp) {
     document.head.append(script);
   });
 }
-await import('./app.js?v=0290');
+await import('./app.js?v=0300');
