@@ -5,6 +5,7 @@ import crypto from 'node:crypto';
 import { DatabaseSync } from 'node:sqlite';
 import { fileURLToPath } from 'node:url';
 import {initialRating,updateRating} from './rating.mjs';
+import {createRewards,campaignId} from './rewards.mjs';
 
 const root = path.dirname(fileURLToPath(import.meta.url));
 const publicDir = path.join(root, 'public');
@@ -114,6 +115,24 @@ for(const table of ['games','trainings']){
 const newsColumns=new Set(db.prepare('PRAGMA table_info(news)').all().map(column=>column.name));
 if(!newsColumns.has('sport'))db.exec("ALTER TABLE news ADD COLUMN sport TEXT NOT NULL DEFAULT 'all'");
 if(!newsColumns.has('image_path'))db.exec('ALTER TABLE news ADD COLUMN image_path TEXT');
+db.exec(`
+ CREATE TABLE IF NOT EXISTS chat_message_hides(user_id TEXT NOT NULL REFERENCES users(id),kind TEXT NOT NULL CHECK(kind IN ('direct','game','training')),message_id TEXT NOT NULL,PRIMARY KEY(user_id,kind,message_id));
+ CREATE INDEX IF NOT EXISTS direct_sender_pair ON direct_messages(sender_id,recipient_id,created_at DESC);
+ CREATE INDEX IF NOT EXISTS direct_recipient_pair ON direct_messages(recipient_id,sender_id,created_at DESC);
+ CREATE INDEX IF NOT EXISTS listing_sender_pair ON chat_messages(sender_id,peer_id,kind,listing_id,created_at DESC);
+ CREATE INDEX IF NOT EXISTS listing_recipient_pair ON chat_messages(peer_id,sender_id,kind,listing_id,created_at DESC);
+`);
+const inboxVisibleSQL=`WITH visible AS (
+ SELECT 'direct' AS kind,'' AS listingId,CASE WHEN sender_id=:viewer THEN recipient_id ELSE sender_id END AS peerId,id,created_at AS lastAt,CASE WHEN recipient_id=:viewer AND read_at IS NULL THEN 1 ELSE 0 END AS incoming
+ FROM direct_messages m WHERE deleted_at IS NULL AND (sender_id=:viewer OR recipient_id=:viewer) AND NOT EXISTS(SELECT 1 FROM chat_message_hides h WHERE h.user_id=:viewer AND h.kind='direct' AND h.message_id=m.id)
+ UNION ALL
+ SELECT kind,listing_id,CASE WHEN sender_id=:viewer THEN peer_id ELSE sender_id END,id,created_at,CASE WHEN peer_id=:viewer AND read_at IS NULL THEN 1 ELSE 0 END
+ FROM chat_messages m WHERE deleted_at IS NULL AND (sender_id=:viewer OR peer_id=:viewer) AND NOT EXISTS(SELECT 1 FROM chat_message_hides h WHERE h.user_id=:viewer AND h.kind=m.kind AND h.message_id=m.id)
+)`;
+const inboxSummary=db.prepare(inboxVisibleSQL+`,ranked AS (SELECT *,ROW_NUMBER() OVER(PARTITION BY kind,listingId,peerId ORDER BY lastAt DESC,id DESC) AS rank,SUM(incoming) OVER(PARTITION BY kind,listingId,peerId) AS unread FROM visible) SELECT * FROM ranked WHERE rank=1 ORDER BY lastAt DESC,id DESC LIMIT :limit OFFSET :offset`);
+const inboxUnread=db.prepare(inboxVisibleSQL+' SELECT COALESCE(SUM(incoming),0) AS unread FROM visible');
+const chatPeer=db.prepare("SELECT id,COALESCE(NULLIF(display_name,''),name) AS name,role,avatar_id AS avatarId,photo_data IS NOT NULL AND photo_data<>'' AS hasPhoto FROM users WHERE id=?");
+function chatAvatar(user){return user?.hasPhoto?'/avatars/'+encodeURIComponent(user.id):null;}
 const now = () => new Date().toISOString();
 // Moscow stays on UTC+3; the next full clock hour is 01:00 when now is 00:05.
 const earliestStart = (time=Date.now()) => (Math.floor(time/3600000)+1)*3600000;
@@ -154,6 +173,12 @@ if(firstTournamentSeed){
   db.prepare('INSERT OR IGNORE INTO users(id,name,username,created_at) VALUES(?,?,?,?)').run('tennis-go-system','Tennis GO','',now());
   const inserted=db.prepare('INSERT OR IGNORE INTO news(id,author_id,title,body,published_at,sport,image_path) VALUES(?,?,?,?,?,?,?)').run(tournamentId,'tennis-go-system','Турнир по теннису среди мужчин и женщин 🎾',tournamentBody,now(),'tennis','/assets/tennis-tournament-2026-10-04.jpg');
   if(inserted.changes)broadcast('Турнир по теннису 4 октября в Академии «Вопреки» — запись @aiidamar','news','tennis');
+}
+const rewards=createRewards(db,{notify:notifyUser,admin:isAdmin});
+if(db.prepare('INSERT OR IGNORE INTO content_seeds(key,created_at) VALUES(?,?)').run(campaignId,now()).changes){
+ db.prepare('INSERT OR IGNORE INTO users(id,name,username,created_at) VALUES(?,?,?,?)').run('tennis-go-system','Tennis GO','',now());
+ db.prepare('INSERT OR IGNORE INTO news(id,author_id,title,body,published_at,sport,image_path) VALUES(?,?,?,?,?,?,?)').run(campaignId,'tennis-go-system','Играешь — получаешь призы 🎾','Матчи, новые соперники, тренировки и посещения партнёрских кортов теперь приносят бонусные баллы. Обменивайте их на призы Tennis GO!\n\n200 баллов — туба мячей, 5 призов.\n500 баллов — футболка или кепка, всего 3 приза.\n1 000 баллов — худи или спортивная сумка, всего 3 приза.\n10 000 баллов — профессиональная ракетка, 1 приз.\n\nПризы ограничены. Баллы списываются при обмене. Топ обновляется по заработанным баллам и не снижается при обмене. Нажмите «Баллы и призы», чтобы посмотреть задания, баланс и правила.',now(),'all',null);
+ broadcast('Новая акция Tennis GO: играешь — получаешь призы! Задания, баллы и топ-3 уже в новостях.','news');
 }
 let botSending=false,botPausedUntil=0;
 function notificationButton(link){
@@ -435,7 +460,7 @@ function processReputationPrompts(reference=new Date()){
     db.exec('BEGIN');try{if(prompted.run(game.id,member.id,now()).changes)notifyUser(member.id,`Оцените игру от 1 до 5 · ${game.venue} · ${new Date(game.starts_at).toLocaleString('ru-RU',{timeZone:'Europe/Moscow',day:'numeric',month:'short',hour:'2-digit',minute:'2-digit'})}. Поставьте 1, если оппонент не пришёл на игру.`,`feedback_${game.id}`,feedbackKeyboard(game.id));db.exec('COMMIT');}catch(error){db.exec('ROLLBACK');throw error;}
   }
 }
-function gameDTO(game,viewer){const members=getMembers.all(game.id).map((m,i)=>{const u=userDTO(m.id);return {...m,name:publicName(u),reputation:u.reputation,reputationCount:u.reputationCount,team:i%2===0?'A':'B'};}),court=allCourts().find(c=>c.id===game.court_id),creator=userDTO(game.creator_id),doubles=game.seats===4;const confirmations=doubles?db.prepare('SELECT user_id AS userId,phase FROM match_confirmations WHERE game_id=?').all(game.id):[];return {id:game.id,sport:game.sport,city:game.city,venue:game.venue,courtId:game.court_id,courtAddress:court?.address||'',startsAt:game.starts_at,duration:game.duration,levelMin:game.level_min,levelMax:game.level_max,seats:game.seats,price:game.price,kind:game.kind,note:game.note,courtReserved:!!game.court_reserved,friendsOnly:!!game.friends_only,seriesId:game.series_id||null,creatorId:game.creator_id,creatorName:publicName(creator),creatorReputation:creator?.reputation??5,reputation:averageReputation(members),feedbackSubmitted:!!db.prepare('SELECT 1 FROM game_feedback WHERE game_id=? AND user_id=?').get(game.id,viewer),creatorAvatarId:creator?.avatarId||null,creatorPhotoData:creator?.photoData||null,creatorGender:creator?.gender||null,creatorNtrp:creator?.ntrpLevel??null,creatorRole:creator?.role||null,opponentGender:game.opponent_gender,cancelled:!!game.cancelled_at,members,joined:members.some(m=>m.id===viewer),result:game.result,resultBy:game.result_by,resultConfirmed:!!game.result_confirmed,resultDisputed:!!game.result_disputed_at,resultDisputeReason:game.result_dispute_reason||null,attendanceBy:game.attendance_by,attendanceDone:doubles?confirmations.some(c=>c.userId===viewer&&c.phase==='attendance'):game.attendance_by===viewer||!!game.attendance_confirmed_at&&members.some(m=>m.id===viewer),attendanceCount:doubles?confirmations.filter(c=>c.phase==='attendance').length:(game.attendance_confirmed_at?2:game.attendance_at?1:0),attendanceConfirmed:doubles?confirmations.filter(c=>c.phase==='attendance').length===4:!!game.attendance_confirmed_at,resultAcknowledged:doubles?confirmations.some(c=>c.userId===viewer&&c.phase==='result'):false,resultConfirmationCount:doubles?confirmations.filter(c=>c.phase==='result').length:(game.result_confirmed?2:game.result?1:0),absenceBy:game.absence_by,absenceReason:game.absence_reason,absenceDisputed:!!game.absence_disputed_at,courtType:court?.courtType||null,voteStatus:db.prepare('SELECT status FROM match_polls WHERE game_id=?').get(game.id)?.status||null,myVote:db.prepare('SELECT choice FROM match_votes WHERE game_id=? AND user_id=?').get(game.id,viewer)?.choice||null,voteCount:db.prepare('SELECT COUNT(*) AS n FROM match_votes WHERE game_id=?').get(game.id).n,...requestState('game',game.id,viewer,game)};}
+function gameDTO(game,viewer){const members=getMembers.all(game.id).map((m,i)=>{const u=userDTO(m.id);return {...m,name:publicName(u),reputation:u.reputation,reputationCount:u.reputationCount,team:i%2===0?'A':'B'};}),court=allCourts().find(c=>c.id===game.court_id),creator=userDTO(game.creator_id),doubles=game.seats===4;const confirmations=doubles?db.prepare('SELECT user_id AS userId,phase FROM match_confirmations WHERE game_id=?').all(game.id):[];return {id:game.id,sport:game.sport,city:game.city,venue:game.venue,courtId:game.court_id,courtAddress:court?.address||'',startsAt:game.starts_at,duration:game.duration,levelMin:game.level_min,levelMax:game.level_max,seats:game.seats,price:game.price,kind:game.kind,note:game.note,courtReserved:!!game.court_reserved,friendsOnly:!!game.friends_only,seriesId:game.series_id||null,creatorId:game.creator_id,creatorName:publicName(creator),creatorReputation:creator?.reputation??5,reputation:averageReputation(members),feedbackSubmitted:!!db.prepare('SELECT 1 FROM game_feedback WHERE game_id=? AND user_id=?').get(game.id,viewer),creatorAvatarId:creator?.avatarId||null,creatorPhotoData:creator?.photoData||null,creatorGender:creator?.gender||null,creatorNtrp:creator?.ntrpLevel??null,creatorRole:creator?.role||null,opponentGender:game.opponent_gender,cancelled:!!game.cancelled_at,members,joined:members.some(m=>m.id===viewer),result:game.result,resultBy:game.result_by,resultConfirmed:!!game.result_confirmed,resultDisputed:!!game.result_disputed_at,resultDisputeReason:game.result_dispute_reason||null,rewardProof:!!db.prepare("SELECT 1 FROM reward_proofs WHERE kind='game' AND source=? AND user_id=?").get(game.id,viewer),attendanceBy:game.attendance_by,attendanceDone:doubles?confirmations.some(c=>c.userId===viewer&&c.phase==='attendance'):game.attendance_by===viewer||!!game.attendance_confirmed_at&&members.some(m=>m.id===viewer),attendanceCount:doubles?confirmations.filter(c=>c.phase==='attendance').length:(game.attendance_confirmed_at?2:game.attendance_at?1:0),attendanceConfirmed:doubles?confirmations.filter(c=>c.phase==='attendance').length===4:!!game.attendance_confirmed_at,resultAcknowledged:doubles?confirmations.some(c=>c.userId===viewer&&c.phase==='result'):false,resultConfirmationCount:doubles?confirmations.filter(c=>c.phase==='result').length:(game.result_confirmed?2:game.result?1:0),absenceBy:game.absence_by,absenceReason:game.absence_reason,absenceDisputed:!!game.absence_disputed_at,courtType:court?.courtType||null,voteStatus:db.prepare('SELECT status FROM match_polls WHERE game_id=?').get(game.id)?.status||null,myVote:db.prepare('SELECT choice FROM match_votes WHERE game_id=? AND user_id=?').get(game.id,viewer)?.choice||null,voteCount:db.prepare('SELECT COUNT(*) AS n FROM match_votes WHERE game_id=?').get(game.id).n,...requestState('game',game.id,viewer,game)};}
 function trainingDTO(training,viewer){const coach=userDTO(training.coach_id),members=getTrainingMembers.all(training.id).map(m=>{const u=userDTO(m.id);return {...m,name:publicName(u),reputation:u.reputation,reputationCount:u.reputationCount};}),court=allCourts().find(c=>c.id===training.court_id),viewerRole=userDTO(viewer)?.role;return {id:training.id,sport:training.sport||'tennis',city:court?.city||'Краснодар',coachId:training.coach_id,coachName:publicName(coach),coachReputation:coach?.reputation??5,coachReputationCount:coach?.reputationCount??0,reputation:averageReputation(members),coachGender:coach?.gender||null,coachYears:coach?.coachYears??null,coachAvatarId:coach?.avatarId||null,coachPhotoData:coach?.photoData||null,format:training.format,seats:training.seats,friendsOnly:!!training.friends_only,seriesId:training.series_id||null,courtId:training.court_id,courtName:court?.name||'',courtAddress:court?.address||'',courtType:court?.courtType||null,startsAt:training.starts_at,duration:training.duration,ntrpMin:training.ntrp_min,ntrpMax:training.ntrp_max,price:viewerRole==='coach'&&training.coach_id!==viewer&&!isAdmin(viewer)?null:training.price,note:training.note,cancelled:!!training.cancelled_at,completed:!!db.prepare('SELECT 1 FROM completed_trainings WHERE training_id=?').get(training.id),reviewed:!!db.prepare('SELECT 1 FROM training_reviews WHERE training_id=? AND user_id=?').get(training.id,viewer),members,joined:members.some(m=>m.id===viewer),...requestState('training',training.id,viewer,training)};}
 function requestMembers(request){const owner=userDTO(request.player_id),extra=db.prepare("SELECT u.id,COALESCE(NULLIF(u.display_name,''),u.name) AS name,u.avatar_id AS avatarId,u.photo_data AS photoData FROM training_request_participants p JOIN users u ON u.id=p.user_id WHERE p.request_id=? ORDER BY p.joined_at").all(request.id);return [{id:request.player_id,name:publicName(owner),avatarId:owner?.avatarId||null,photoData:owner?.photoData||null},...extra.map(m=>({...m,name:publicName(userDTO(m.id))}))];}
 function trainingRequestDTO(request,viewer=null){const owner=userDTO(request.player_id),courtIds=JSON.parse(request.court_ids),all=allCourts(),members=requestMembers(request);return {id:request.id,playerId:request.player_id,playerName:publicName(owner),playerAvatarId:owner?.avatarId||null,playerPhotoData:owner?.photoData||null,playerNtrp:owner?.ntrpLevel??null,sport:request.sport,city:request.city,format:request.format,seats:request.seats||({individual:1,split:2,group:6})[request.format],members,joined:members.some(m=>m.id===viewer),startsAt:request.starts_at,endsAt:request.ends_at,courts:courtIds.map(id=>all.find(c=>c.id===id)).filter(Boolean).map(c=>({id:c.id,name:c.name,address:c.address})),note:request.note,createdAt:request.created_at};}
@@ -460,7 +485,7 @@ async function weatherHours(city='Краснодар'){
  weatherPending.set(city,pending);try{return await pending;}finally{weatherPending.delete(city);}
 }
 async function api(req,res,url){
-  if(url.pathname==='/api/config')return send(res,200,{demo:!process.env.BOT_TOKEN,botUsername:process.env.BOT_USERNAME||'',cities,version:'0.27.0'});
+  if(url.pathname==='/api/config')return send(res,200,{demo:!process.env.BOT_TOKEN,botUsername:process.env.BOT_USERNAME||'',cities,version:'0.28.0'});
   if(req.method==='GET'&&url.pathname==='/api/weather'){const city=url.searchParams.get('city')||'Краснодар';if(!cities.includes(city))fail(400,'Выберите город из списка');const hours=await weatherHours(city);return send(res,200,{hours,status:weatherCaches.get(city).status,city,source:'Open-Meteo'});}
   const identity=authenticate(req);addUser.run(identity.id,identity.name,identity.username,now());
   const me=userDTO(identity.id);
@@ -571,6 +596,7 @@ async function api(req,res,url){
   }
   if(req.method==='GET'&&url.pathname==='/api/registration-courts')return send(res,200,{courts:allCourts().map(({id,name,address,city,sport})=>({id,name,address,city,sport}))});
   if(!me.registered)fail(403,'Завершите регистрацию');
+  const rewardResponse=await rewards.route(req,url,me,body);if(rewardResponse!==null)return send(res,200,rewardResponse);
   if(url.pathname==='/api/preferences/sports'&&req.method==='PATCH'){
     const selected=(await body(req)).sports;
     if(!Array.isArray(selected)||selected.length>2||new Set(selected).size!==selected.length||selected.some(x=>!['tennis','padel'].includes(x)))fail(400,'Выберите Tennis, Padel или оба вида спорта');
@@ -580,7 +606,7 @@ async function api(req,res,url){
   if(url.pathname==='/api/news'&&req.method==='GET'){
     if(me.role==='club'&&!isAdmin(me.id))fail(403,'Новости доступны участникам');
     const items=db.prepare("SELECT id,title,body,published_at AS publishedAt,sport,image_path AS imagePath FROM news ORDER BY published_at DESC LIMIT 100").all();
-    return send(res,200,{items});
+    rewards.reconcile();const campaign=items.some(item=>item.id===campaignId)?rewards.snapshot(me.id):null;return send(res,200,{items:items.map(item=>item.id===campaignId?{...item,campaign}:item)});
   }
   if(url.pathname==='/api/news'&&req.method==='POST'){
     if(!isAdmin(me.id))fail(403,'Публикация доступна только администратору');
@@ -759,9 +785,10 @@ async function api(req,res,url){
   }
   if(req.method==='GET'&&url.pathname==='/api/ratings/history')return send(res,200,{events:db.prepare('SELECT game_id AS gameId,sport,previous,current,created_at AS createdAt FROM rating_events WHERE user_id=? ORDER BY created_at DESC LIMIT 30').all(me.id)});
   if(req.method==='GET'&&url.pathname==='/api/leaderboard'){
+    rewards.reconcile();if(url.searchParams.get('mode')==='bonus')return send(res,200,{players:rewards.leaders().map(p=>({...p,rating:ratingOf(p.id,url.searchParams.get('sport')==='padel'?'padel':'tennis').rating,matches:ratingOf(p.id,url.searchParams.get('sport')==='padel'?'padel':'tennis').matches}))});
     const sport=url.searchParams.get('sport')||'tennis';if(!['tennis','padel'].includes(sport))fail(400,'Выберите вид спорта');
     const players=db.prepare("SELECT u.id,COALESCE(NULLIF(u.display_name,''),u.name) AS name,COALESCE(NULLIF(u.city,''),'Краснодар') AS city,u.avatar_id AS avatarId,u.photo_data AS photoData,r.rating,r.matches,r.wins,r.losses FROM player_ratings r JOIN users u ON u.id=r.user_id WHERE r.sport=? AND r.matches>0 AND u.registration_version>=2 AND u.role='player' ORDER BY r.rating DESC,r.matches DESC LIMIT 100").all(sport);
-    return send(res,200,{sport,players:players.map(p=>({...p,name:publicName({...p,role:'player'})}))});
+    return send(res,200,{sport,players:players.filter(p=>!userDTO(p.id)?.blockedAt).map(p=>({...p,points:rewards.balance(p.id).earned,balance:rewards.balance(p.id).balance,name:publicName({...p,role:'player'})}))});
   }
   if(req.method==='GET'&&url.pathname==='/api/users'){
     const search=str(url.searchParams.get('q'),80),offset=Math.min(10000,Math.max(0,Number(url.searchParams.get('offset'))||0)),role=url.searchParams.get('role');
@@ -811,14 +838,22 @@ async function api(req,res,url){
     return send(res,200,kind==='game'?{game:gameDTO(getGame.get(id),me.id)}:{training:trainingDTO(getTraining.get(id),me.id)});
   }
   if(req.method==='GET'&&url.pathname==='/api/inbox'){
-    const conversations=new Map();
-    function add(key,kind,listingId,otherId,message){const prev=conversations.get(key);if(!prev||message.createdAt>prev.lastAt)conversations.set(key,{key,kind,listingId,peerId:otherId,lastMessage:message.body,lastAt:message.createdAt,unread:prev?.unread||0});const thread=conversations.get(key);if(message.senderId!==me.id&&!message.readAt)thread.unread++;}
-    const listingMessages=db.prepare('SELECT kind,listing_id AS listingId,sender_id AS senderId,peer_id AS peerId,body,created_at AS createdAt,read_at AS readAt FROM chat_messages WHERE deleted_at IS NULL AND (sender_id=? OR peer_id=?) ORDER BY created_at').all(me.id,me.id);
-    for(const m of listingMessages){const other=m.senderId===me.id?m.peerId:m.senderId;add(`${m.kind}:${m.listingId}:${other}`,m.kind,m.listingId,other,m);}
-    const directMessages=db.prepare('SELECT sender_id AS senderId,recipient_id AS peerId,body,created_at AS createdAt,read_at AS readAt FROM direct_messages WHERE deleted_at IS NULL AND (sender_id=? OR recipient_id=?) ORDER BY created_at').all(me.id,me.id);
-    for(const m of directMessages){const other=m.senderId===me.id?m.peerId:m.senderId;add(`direct:${other}`,'direct',null,other,m);}
-    const threads=[...conversations.values()].map(t=>{const u=userDTO(t.peerId),listing=t.kind==='game'?getGame.get(t.listingId):t.kind==='training'?getTraining.get(t.listingId):null;return {...t,peerName:publicName(u),peerAvatarId:u?.avatarId||null,peerPhotoData:u?.photoData||null,title:t.kind==='game'?`Игра · ${listing?.venue||''}`:t.kind==='training'?`Тренировка · ${allCourts().find(c=>c.id===listing?.court_id)?.name||''}`:'Личный чат'};}).sort((a,b)=>b.lastAt.localeCompare(a.lastAt));
-    return send(res,200,{threads,unread:threads.reduce((n,t)=>n+t.unread,0)});
+    const limit=Math.max(1,Math.min(200,Math.floor(Number(url.searchParams.get('limit')))||50)),offset=Math.max(0,Math.floor(Number(url.searchParams.get('offset')))||0);
+    const rows=inboxSummary.all({viewer:me.id,limit:limit+1,offset}),hasMore=rows.length>limit;
+    const courtNames=rows.some(t=>t.kind==='training')?new Map(allCourts().map(c=>[c.id,c.name])):new Map();
+    const threads=rows.slice(0,limit).map(t=>{
+      const u=chatPeer.get(t.peerId),listing=t.kind==='game'?db.prepare('SELECT venue FROM games WHERE id=?').get(t.listingId):t.kind==='training'?db.prepare('SELECT court_id FROM trainings WHERE id=?').get(t.listingId):null;
+      const body=db.prepare(t.kind==='direct'?'SELECT body FROM direct_messages WHERE id=?':'SELECT body FROM chat_messages WHERE id=?').get(t.id)?.body||'';
+      return {key:t.kind==='direct'?`direct:${t.peerId}`:`${t.kind}:${t.listingId}:${t.peerId}`,kind:t.kind,listingId:t.listingId||null,peerId:t.peerId,lastMessage:body,lastAt:t.lastAt,unread:t.unread,peerName:publicName(u),peerAvatarId:u?.avatarId||null,peerPhotoData:chatAvatar(u),title:t.kind==='game'?`Игра · ${listing?.venue||''}`:t.kind==='training'?`Тренировка · ${courtNames.get(listing?.court_id)||''}`:'Личный чат'};
+    });
+    return send(res,200,{threads,unread:inboxUnread.get({viewer:me.id}).unread,hasMore});
+  }
+  if(req.method==='DELETE'&&url.pathname==='/api/dialogs'){
+    const b=await body(req,2000),kind=b.kind,peerId=str(b.peerId,60),listingId=str(b.listingId,36);
+    if(!['direct','game','training'].includes(kind)||!/^([a-zA-Z0-9-]{1,60})$/.test(peerId)||peerId===me.id||kind!=='direct'&&!/^[a-f0-9-]{36}$/i.test(listingId))fail(400,'Диалог указан неверно');
+    const insert=kind==='direct'?db.prepare("INSERT OR IGNORE INTO chat_message_hides SELECT ?,'direct',id FROM direct_messages WHERE (sender_id=? AND recipient_id=?) OR (sender_id=? AND recipient_id=?)"):db.prepare('INSERT OR IGNORE INTO chat_message_hides SELECT ?,kind,id FROM chat_messages WHERE kind=? AND listing_id=? AND ((sender_id=? AND peer_id=?) OR (sender_id=? AND peer_id=?))');
+    if(kind==='direct')insert.run(me.id,me.id,peerId,peerId,me.id);else insert.run(me.id,kind,listingId,me.id,peerId,peerId,me.id);
+    return send(res,200,{deleted:true});
   }
   const directMatch=url.pathname.match(/^\/api\/direct\/([a-zA-Z0-9-]{1,60})$/);
   if(directMatch&&['GET','POST'].includes(req.method)){
@@ -832,8 +867,8 @@ async function api(req,res,url){
       notifyUser(peerId,isAdmin(peerId)?`${topic} от ${publicName(me)}:\n${message}`:`${publicName(me)}: новое личное сообщение`);
     }
     db.prepare('UPDATE direct_messages SET read_at=? WHERE recipient_id=? AND sender_id=? AND read_at IS NULL AND deleted_at IS NULL').run(now(),me.id,peerId);
-    const messages=db.prepare('SELECT * FROM (SELECT id,sender_id AS senderId,body,created_at AS createdAt FROM direct_messages WHERE deleted_at IS NULL AND ((sender_id=? AND recipient_id=?) OR (sender_id=? AND recipient_id=?)) ORDER BY created_at DESC LIMIT 100) ORDER BY createdAt').all(me.id,peerId,peerId,me.id);
-    return send(res,200,{messages,peer:{id:peer.id,name:publicName(peer),avatarId:peer.avatarId,photoData:peer.photoData}});
+    const messages=db.prepare("SELECT * FROM (SELECT id,sender_id AS senderId,body,created_at AS createdAt FROM direct_messages m WHERE deleted_at IS NULL AND NOT EXISTS(SELECT 1 FROM chat_message_hides h WHERE h.user_id=? AND h.kind='direct' AND h.message_id=m.id) AND ((sender_id=? AND recipient_id=?) OR (sender_id=? AND recipient_id=?)) ORDER BY created_at DESC,id DESC LIMIT 100) ORDER BY createdAt").all(me.id,me.id,peerId,peerId,me.id);
+    return send(res,200,{messages,peer:{id:peer.id,name:publicName(peer),avatarId:peer.avatarId,photoData:chatAvatar(chatPeer.get(peerId))}});
   }
   const userMatch=url.pathname.match(/^\/api\/users\/([a-zA-Z0-9-]{1,60})$/);
   if(req.method==='GET'&&userMatch){
@@ -850,8 +885,8 @@ async function api(req,res,url){
     const authorId=kind==='game'?listing.creator_id:listing.coach_id;
     if(!peerId){
       if(req.method!=='GET'||me.id!==authorId)fail(403,'Список диалогов доступен автору');
-      const ids=db.prepare('SELECT DISTINCT CASE WHEN sender_id=? THEN peer_id ELSE sender_id END AS id FROM chat_messages WHERE deleted_at IS NULL AND kind=? AND listing_id=? AND (sender_id=? OR peer_id=?)').all(me.id,kind,id,me.id,me.id);
-      return send(res,200,{threads:ids.map(row=>{const u=userDTO(row.id);return {id:row.id,name:publicName(u),avatarId:u?.avatarId||null,photoData:u?.photoData||null};})});
+      const ids=db.prepare('SELECT DISTINCT CASE WHEN sender_id=? THEN peer_id ELSE sender_id END AS id FROM chat_messages m WHERE deleted_at IS NULL AND NOT EXISTS(SELECT 1 FROM chat_message_hides h WHERE h.user_id=? AND h.kind=m.kind AND h.message_id=m.id) AND kind=? AND listing_id=? AND (sender_id=? OR peer_id=?)').all(me.id,me.id,kind,id,me.id,me.id);
+      return send(res,200,{threads:ids.map(row=>{const u=userDTO(row.id);return {id:row.id,name:publicName(u),avatarId:u?.avatarId||null,photoData:chatAvatar(chatPeer.get(row.id))};})});
     }
     if(me.id===peerId||!userDTO(peerId)?.registered||userDTO(peerId)?.blockedAt)fail(404,'Собеседник не найден');
     if(me.id!==authorId&&peerId!==authorId)fail(403,'Написать можно автору объявления');
@@ -869,7 +904,7 @@ async function api(req,res,url){
       notifyUser(peerId,`${publicName(me)}: сообщение по объявлению`);
     }
     db.prepare('UPDATE chat_messages SET read_at=? WHERE kind=? AND listing_id=? AND sender_id=? AND peer_id=? AND read_at IS NULL AND deleted_at IS NULL').run(now(),kind,id,peerId,me.id);
-    const messages=db.prepare('SELECT * FROM (SELECT id,sender_id AS senderId,body,created_at AS createdAt FROM chat_messages WHERE deleted_at IS NULL AND kind=? AND listing_id=? AND sender_id IN (?,?) AND peer_id IN (?,?) ORDER BY created_at DESC LIMIT 100) ORDER BY createdAt').all(kind,id,me.id,peerId,me.id,peerId);
+    const messages=db.prepare('SELECT * FROM (SELECT id,sender_id AS senderId,body,created_at AS createdAt FROM chat_messages m WHERE deleted_at IS NULL AND NOT EXISTS(SELECT 1 FROM chat_message_hides h WHERE h.user_id=? AND h.kind=m.kind AND h.message_id=m.id) AND kind=? AND listing_id=? AND sender_id IN (?,?) AND peer_id IN (?,?) ORDER BY created_at DESC,id DESC LIMIT 100) ORDER BY createdAt').all(me.id,kind,id,me.id,peerId,me.id,peerId);
     return send(res,200,{messages});
   }
   if(req.method==='GET'&&url.pathname==='/api/bookings'){
@@ -1241,6 +1276,15 @@ const server=http.createServer(async(req,res)=>{
   try{
     const url=new URL(req.url,'http://localhost');
     if(url.pathname.startsWith('/api/'))return await api(req,res,url);
+    const avatarMatch=url.pathname.match(/^\/avatars\/([a-zA-Z0-9-]{1,60})$/);
+    if(avatarMatch){
+      if(req.method!=='GET'&&req.method!=='HEAD')fail(405,'Метод не поддерживается');
+      const photo=db.prepare('SELECT photo_data FROM users WHERE id=? AND registration_version>=2 AND blocked_at IS NULL').get(avatarMatch[1])?.photo_data;
+      const match=/^data:(image\/(?:jpeg|png|webp));base64,([A-Za-z0-9+/=]+)$/.exec(photo||'');if(!match)fail(404,'Фото не найдено');
+      const etag='"'+crypto.createHash('sha256').update(photo).digest('hex')+'"';
+      if(req.headers['if-none-match']===etag){res.writeHead(304,{ETag:etag,'Cache-Control':'private, no-cache'});return res.end();}
+      const bytes=Buffer.from(match[2],'base64');res.writeHead(200,{'Content-Type':match[1],'Content-Length':bytes.length,ETag:etag,'Cache-Control':'private, no-cache','X-Content-Type-Options':'nosniff'});return res.end(req.method==='HEAD'?undefined:bytes);
+    }
     const media=url.pathname.match(/^\/media\/([a-f0-9-]{36})$/i);
     if(media){
       if(req.method!=='GET'&&req.method!=='HEAD')fail(405,'Метод не поддерживается');
@@ -1354,4 +1398,4 @@ async function botPollLoop(){
   finally{setTimeout(botPollLoop,1500).unref();}
 }
 if(import.meta.url===`file://${process.argv[1]}`){server.listen(Number(process.env.PORT||3000),'0.0.0.0',()=>console.log(`Tennis GO Mini App: http://localhost:${process.env.PORT||3000} (${process.env.BOT_TOKEN?'Telegram':'demo'})`));if(process.env.BOT_TOKEN)setTimeout(botPollLoop,1500).unref();}
-export {server,db,verifyInitData,sendNextBotMessage,processEventReminders,processTrainingAds,processMatchPrompts,processReputationPrompts,recordGameFeedback,recordMatchVote,handleBotUpdate,notificationButton,earliestStart};
+export {server,db,rewards,verifyInitData,sendNextBotMessage,processEventReminders,processTrainingAds,processMatchPrompts,processReputationPrompts,recordGameFeedback,recordMatchVote,handleBotUpdate,notificationButton,earliestStart};
