@@ -403,5 +403,15 @@
     "image": "/assets/court_generic.svg",
     "source": "https://centr-setbol.ru/price/",
     "city": "Краснодар"
+  },
+  {
+    "id": "svetlaya-73",
+    "sport": "tennis",
+    "name": "Корт на Светлой, 73",
+    "city": "Краснодар",
+    "address": "ул. Светлая, 73",
+    "courtType": "Открытый",
+    "surface": "Ковёр",
+    "image": "/assets/court_generic.svg"
   }
 ]
