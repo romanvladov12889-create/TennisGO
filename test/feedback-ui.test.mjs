@@ -1,13 +1,14 @@
+import {createClubUI} from '../public/club-ui.js';
 import {test} from 'node:test';
 import assert from 'node:assert/strict';
 import {readFileSync} from 'node:fs';
 import vm from 'node:vm';
 import crypto from 'node:crypto';
-const source=readFileSync(new URL('../public/app.js',import.meta.url),'utf8');
+const source=readFileSync(new URL('../public/app.js',import.meta.url),'utf8').replace(/^import .*;\n/, '');
 function ui(){
  const handlers={};const app={innerHTML:'',addEventListener:(name,fn)=>handlers[name]=fn,querySelectorAll(){return []},querySelector(){return null}};
  const intervals=[],listeners={};
- const context=vm.createContext({window:{setInterval:(fn,ms)=>intervals.push({fn,ms})},document:{querySelector:()=>app,addEventListener:(event,fn)=>listeners[event]=fn,visibilityState:'visible'},localStorage:{getItem:()=>null,setItem(){}},crypto,URLSearchParams,Intl,Date,console});
+ const context=vm.createContext({createClubUI,window:{setInterval:(fn,ms)=>intervals.push({fn,ms})},document:{querySelector:()=>app,addEventListener:(event,fn)=>listeners[event]=fn,visibilityState:'visible'},localStorage:{getItem:()=>null,setItem(){}},crypto,URLSearchParams,Intl,Date,console});
  const bootStart=source.indexOf('(async()=>{try{state.config=');
  const bootEnd=source.indexOf('\nwindow.setInterval',bootStart);
  vm.runInContext(source.slice(0,bootStart)+source.slice(bootEnd),context);
@@ -72,8 +73,14 @@ test('reward polling keeps edited forms and avoids parallel requests',async()=>{
 
 test('email registration and recovery screens lead to code verification without requiring Telegram',()=>{
  const {run,app}=ui();run('state.config={emailRegistration:true};webEntry()');assert.match(app.innerHTML,/data-email-register/);assert.match(app.innerHTML,/data-email-reset/);assert.match(app.innerHTML,/Email или логин/);
- run("emailEntry('register')");assert.match(app.innerHTML,/email-request-form/);assert.match(app.innerHTML,/Telegram не обязателен/);
- run("emailFlow.email='player@example.com';emailEntry('register',true)");assert.match(app.innerHTML,/email-verify-form/);assert.match(app.innerHTML,/one-time-code/);assert.match(app.innerHTML,/player@example.com/);
+ run("emailEntry('register')");assert.match(app.innerHTML,/web-register-form/);assert.match(app.innerHTML,/Подтверждать почту не нужно/);
+ run("emailFlow.email='player@example.com';emailEntry('reset',true)");assert.match(app.innerHTML,/email-verify-form/);assert.match(app.innerHTML,/one-time-code/);assert.match(app.innerHTML,/player@example.com/);
  run("emailEntry('reset')");assert.match(app.innerHTML,/Восстановить пароль/);
  run("state.registrationRole='coach'");const form=run("identityFields({role:'coach'},true)");assert.ok(!/name="telegramContact"[^>]*required/.test(form));
+});
+
+test('coach proximity uses nearest profile court and respects missing location/coordinates',()=>{
+ const {run}=ui();run("state.catalog.courts=[{id:'near',name:'Рядом',latitude:45.01,longitude:39},{id:'far',name:'Далеко',latitude:45.2,longitude:39},{id:'unknown',name:'Нет координат'}];state.location={latitude:45,longitude:39}");
+ assert.match(run("coachDistanceBadge(['far','near'])"),/Рядом/);assert.match(run("coachDistanceBadge(['far'])"),/Далеко/);assert.equal(run("coachDistanceBadge(['unknown'])"),'');assert.equal(run('coachDistanceBadge([])'),'');
+ run('state.location=null');assert.equal(run("coachDistanceBadge(['near'])"),'');
 });

@@ -27,6 +27,20 @@ export function createWebAuth(db,{sendEmail=sendVerificationEmail}={}){
  function issue(req,res,id){const user=db.prepare('SELECT blocked_at FROM users WHERE id=?').get(id);if(!user||user.blocked_at)fail(403,'Профиль недоступен');clean();const token=random(),csrf=random(),t=Date.now();db.prepare('INSERT INTO web_sessions VALUES(?,?,?,?,?)').run(hash(token),id,csrf,t,t+30*86400000);cookie(req,res,'tg_web',token,30*86400);return {authenticated:true,csrf};}
  async function route(req,res,url,body){
   const endpoint=url.pathname,method=req.method;
+  if(endpoint==='/api/web-auth/register'&&method==='POST'){
+   origin(req);limit(req,'signup',8);const b=await body(req),email=String(b.email||'').trim().toLowerCase(),pass=String(b.password||'');
+   if(email.length>254||! /^[a-z0-9.!#$%&'*+/=?^_`{|}~-]+@[a-z0-9](?:[a-z0-9.-]*[a-z0-9])?\.[a-z]{2,63}$/i.test(email))fail(400,'Укажите корректный email');
+   if(pass.length<10||pass.length>128)fail(400,'Пароль: от 10 до 128 символов');
+   if(db.prepare('SELECT 1 FROM web_emails WHERE email=?').get(email))fail(409,'Email уже зарегистрирован. Войдите или восстановите пароль');
+   const salt=crypto.randomBytes(16).toString('hex'),derived=await scrypt(pass,salt,64),id='web-'+crypto.randomUUID();
+   db.exec('BEGIN IMMEDIATE');try{
+    if(db.prepare('SELECT 1 FROM web_emails WHERE email=?').get(email))fail(409,'Email уже зарегистрирован. Войдите или восстановите пароль');
+    db.prepare('INSERT INTO users(id,name,username,created_at) VALUES(?,?,?,?)').run(id,'Новый игрок','',new Date().toISOString());
+    db.prepare('INSERT INTO web_emails VALUES(?,?,0)').run(email,id);
+    db.prepare('INSERT INTO web_passwords VALUES(?,?,?,?,?)').run(id,id,salt,derived.toString('hex'),Date.now());
+    const result=issue(req,res,id);db.exec('COMMIT');return result;
+   }catch(error){db.exec('ROLLBACK');throw error;}
+  }
   if(endpoint==='/api/web-auth/email/request'&&method==='POST'){
    origin(req);limit(req,'email-send',8);if(sendEmail===sendVerificationEmail&&!emailConfigured())fail(503,'Регистрация по email пока не настроена. Попробуйте позже');
    const b=await body(req),email=String(b.email||'').trim().toLowerCase(),purpose=b.purpose==='reset'?'reset':'register';
@@ -54,6 +68,7 @@ export function createWebAuth(db,{sendEmail=sendVerificationEmail}={}){
     if(row.purpose==='reset'&&!id)fail(400,'Аккаунт не найден. Выберите регистрацию');
     if(!id){id='web-'+crypto.randomUUID();db.prepare('INSERT INTO users(id,name,username,created_at) VALUES(?,?,?,?)').run(id,'Новый игрок','',new Date().toISOString());db.prepare('INSERT INTO web_emails VALUES(?,?,?)').run(row.email,id,Date.now());}
     db.prepare('INSERT INTO web_passwords VALUES(?,?,?,?,?) ON CONFLICT(user_id) DO UPDATE SET salt=excluded.salt,password_hash=excluded.password_hash,updated_at=excluded.updated_at').run(id,id,salt,derived.toString('hex'),Date.now());
+    db.prepare('UPDATE web_emails SET verified_at=? WHERE user_id=?').run(Date.now(),id);
     db.prepare('UPDATE email_challenges SET consumed=1 WHERE email=?').run(row.email);
     db.prepare('DELETE FROM web_sessions WHERE user_id=?').run(id);
     const result=issue(req,res,id);db.exec('COMMIT');cookie(req,res,'tg_email_pending','',0);return result;

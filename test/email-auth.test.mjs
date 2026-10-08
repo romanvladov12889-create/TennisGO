@@ -14,8 +14,22 @@ async function request(email,purpose='register'){const r=await api('/web-auth/em
 async function verify(c,password='long-password-123'){return api('/web-auth/email/verify','POST',{code:c.code,password},{cookie:c.cookie});}
 let player,playerHeaders;
 try{
+ await test('direct signup works without mail, stores unverified email, and cannot overwrite existing credentials',async()=>{
+  const oldKey=process.env.RESEND_API_KEY;delete process.env.RESEND_API_KEY;
+  const before=mails.length,r=await api('/web-auth/register','POST',{email:'New@Example.com',password:'long-password-123'});
+  assert.equal(r.status,200,JSON.stringify(r.data));assert.equal(mails.length,before);
+  const h={cookie:cookie(r,'tg_web'),'x-web-csrf':r.data.csrf},user=(await api('/me','GET',undefined,h)).data.user;
+  assert.equal(user.email,'new@example.com');assert.equal(user.emailVerified,false);assert.equal(user.registered,0);
+  assert.equal((await api('/web-auth/login','POST',{login:'new@example.com',password:'long-password-123'})).status,200);
+  assert.equal((await api('/web-auth/register','POST',{email:'NEW@example.com',password:'attacker-password'})).status,409);
+  assert.equal((await api('/web-auth/login','POST',{login:'new@example.com',password:'long-password-123'})).status,200);
+  assert.equal((await api('/web-auth/register','POST',{email:'bad',password:'long-password-123'})).status,400);
+  assert.equal((await api('/web-auth/register','POST',{email:'other@example.com',password:'short'})).status,400);
+  assert.equal((await api('/web-auth/register','POST',{email:'other@example.com',password:'long-password-123'},{origin:'https://evil.example'})).status,403);
+  process.env.RESEND_API_KEY=oldKey;
+ });
  await test('email proof is required, browser bound, single use and does not expose code',async()=>{
-  const c=await request('Player@Example.com');assert.equal(db.prepare('SELECT COUNT(*) n FROM web_emails').get().n,0);
+  const c=await request('Player@Example.com');assert.equal(db.prepare('SELECT COUNT(*) n FROM web_emails WHERE email=\'player@example.com\'').get().n,0);
   assert.equal((await api('/web-auth/email/verify','POST',{code:c.code,password:'long-password-123'})).status,400);
   assert.equal((await verify({...c,code:'000000'})).status,400);
   const r=await verify(c);assert.equal(r.status,200,JSON.stringify(r.data));playerHeaders={cookie:cookie(r,'tg_web'),'x-web-csrf':r.data.csrf};
@@ -27,7 +41,7 @@ try{
   assert.equal((await api('/profile','POST',payload,playerHeaders)).status,200);
   for(const role of ['coach','club']){
    const c=await request(role+'@example.com'),v=await verify(c),h={cookie:cookie(v,'tg_web'),'x-web-csrf':v.data.csrf};assert.equal(v.status,200);
-   const p=role==='coach'?{...payload,role,coachYears:3,coachSports:['tennis'],coachCourts:[]}:{role,name:'Иван Петров',city:'Краснодар',clubName:'Тест клуб',clubAddress:'Улица 1',clubPhone:'+79990000000',clubSports:['tennis'],clubPhotoData:'data:image/jpeg;base64,/9j/2Q==',clubSurface:'hard',opensAt:'08:00',closesAt:'22:00',hourlyPrice:1000};
+   const p=role==='coach'?{...payload,role,coachYears:3,coachSports:['tennis'],coachCourts:[]}:{role,name:'Иван Петров',city:'Краснодар',clubName:'Тест клуб',clubAddress:'Улица 1',clubPhone:'+79990000000',clubSports:['tennis'],clubPhotoData:'data:image/jpeg;base64,/9j/2Q==',clubSurface:'hard',courtType:'outdoor',opensAt:'08:00',closesAt:'22:00',hourlyPrice:1000};
    const r=await api('/profile','POST',p,h);assert.equal(r.status,200,JSON.stringify(r.data));assert.equal(r.data.user.role,role);if(role==='club')assert.equal(r.data.user.club.status,'pending');
    assert.equal((await api('/me','GET',undefined,h)).data.user.email,role+'@example.com');
   }

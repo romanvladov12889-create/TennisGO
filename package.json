@@ -1,6 +1,6 @@
 {
   "name": "tennis-go-miniapp",
-  "version": "0.30.3",
+  "version": "0.32.0",
   "private": true,
   "type": "module",
   "scripts": {

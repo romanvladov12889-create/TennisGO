@@ -1,3 +1,4 @@
+import {createClubUI} from '../public/club-ui.js';
 import {test} from 'node:test';
 import assert from 'node:assert/strict';
 import vm from 'node:vm';
@@ -7,8 +8,8 @@ function setup(){
  const handlers={},preview={innerHTML:''},status={textContent:''};
  const app={innerHTML:'',addEventListener:(n,f)=>{handlers[n]=f;},querySelectorAll:()=>[]};
  const document={querySelector:s=>s==='#photo-preview'?preview:s==='#profile-photo-status'?status:app,querySelectorAll:()=>[],addEventListener(){},createElement:()=>({setAttribute(){},scrollIntoView(){}})};
- const ctx=vm.createContext({window:{setInterval(){}},document,localStorage:{getItem:()=>'',setItem(){}},crypto,URLSearchParams,Intl,Date,console,setTimeout,clearTimeout,FormData:class{constructor(form){this.data=form.data}get(k){return this.data[k]??null}getAll(k){const v=this.get(k);return Array.isArray(v)?v:v?[v]:[]}has(k){return k in this.data}}});
- let s=readFileSync(new URL('../public/app.js',import.meta.url),'utf8');const a=s.indexOf('(async()=>{try{state.config='),b=s.indexOf('\nwindow.setInterval',a);vm.runInContext(s.slice(0,a)+s.slice(b),ctx);
+ const ctx=vm.createContext({createClubUI,window:{setInterval(){}},document,localStorage:{getItem:()=>'',setItem(){}},crypto,URLSearchParams,Intl,Date,console,setTimeout,clearTimeout,FormData:class{constructor(form){this.data=form.data}get(k){return this.data[k]??null}getAll(k){const v=this.get(k);return Array.isArray(v)?v:v?[v]:[]}has(k){return k in this.data}}});
+ let s=readFileSync(new URL('../public/app.js',import.meta.url),'utf8').replace(/^import .*;\n/, '');const a=s.indexOf('(async()=>{try{state.config='),b=s.indexOf('\nwindow.setInterval',a);vm.runInContext(s.slice(0,a)+s.slice(b),ctx);
  const run=s=>vm.runInContext(s,ctx);run("state.me={id:'a',name:'Анна',registered:false};state.registrationRole='coach';state.registrationStep=2;render=()=>{};toast=message=>globalThis.lastToast=message;api=async()=>({courts:[]});globalThis.resolvers=[];imageData=()=>new Promise((resolve,reject)=>resolvers.push({resolve,reject}));");
  const button={disabled:false,textContent:'Далее',before(box){form.error=box}},form={id:'registration-form',data:{role:'coach',firstName:'Анна',lastName:'Иванова',gender:'female',playingYears:'5',phone:'+79991234567',city:'Краснодар',coachSports:['tennis']},querySelector:s=>s==='.identity-form-error'?null:button};
  ctx.input={files:[{type:'image/jpeg'}],isConnected:true,value:'photo.jpg'};
@@ -35,4 +36,9 @@ test('Player registration also waits for photo before saving the profile',async(
  const u=setup();u.form.data.role='player';u.form.data.ntrpLevel='3';u.run("saveIdentity=async payload=>globalThis.saved=payload");
  const upload=u.run('uploadProfilePhoto(input)'),submit=u.submit();assert.equal(u.run('globalThis.saved'),undefined);
  u.run("resolvers[0].resolve('data:image/jpeg;base64,PLAYER')");await upload;await submit;assert.equal(u.run('saved.photoData'),'data:image/jpeg;base64,PLAYER');assert.equal(u.run('saved.role'),'player');
+});
+test('website signup form reaches the registration API and reloads with an authenticated session',async()=>{
+ const u=setup();u.form.id='web-register-form';u.form.data={email:'person@example.com',password:'long-password-123'};
+ u.run("globalThis.location={reload(){globalThis.reloaded=true}};api=async(route,method,payload)=>{globalThis.signup={route,method,payload};return {csrf:'token'}}");
+ await u.submit();assert.equal(u.run('signup.route'),'/web-auth/register');assert.equal(u.run('signup.payload.email'),'person@example.com');assert.equal(u.run('state.webCsrf'),'token');assert.equal(u.run('reloaded'),true);
 });
