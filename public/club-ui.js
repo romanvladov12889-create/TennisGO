@@ -1,4 +1,4 @@
-import {rangeFor,bookingStats,dateKey,DAY} from './club-time.js?v=0320';
+import {rangeFor,bookingStats,dateKey,DAY} from './club-time.js?v=0321';
 export function createClubUI({state,app,api,render,esc,toast,imageData,saveIdentity,refresh,pushView,loadAdmin}){
  const s={view:'day',date:dateKey(Date.now()),analyticsView:'month',analyticsMode:'chart',data:null,analytics:null,clubId:null,previewScreen:'calendar',formKey:null,draft:{},photos:[],step:0,busy:false,manual:false,bookingDate:'',bookingTime:'',manualDraft:{},availability:null,playerCourt:null,askCancel:null,loadVersion:0};
  const labels={day:'День',week:'Неделя',month:'Месяц'},statusLabel={pending:'Ожидает подтверждения',confirmed:'Подтверждено',rejected:'Отклонено',cancelled:'Отменено'};

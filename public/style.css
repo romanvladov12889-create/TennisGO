@@ -541,3 +541,17 @@ button:active{transform:scale(.98)}
 .cu-book-form input[type=date]::-webkit-date-and-time-value{text-align:left;min-height:24px}
 .cu-form .cu-two+.hint{margin:0 0 14px}
 .cu-book-form> .hint{margin-bottom:14px}
+
+/* Registration and browser navigation consistency. */
+.role-grid .role-card:last-child{background:white}
+#registration-form label.field:has(>.required-star)::before,#coach-registration-form label.field:has(>.required-star)::before{content:none!important}
+@media(min-width:900px){.website .nav button[data-tab]{font-size:15px;font-weight:750;line-height:1.12}}
+
+/* Desktop sidebar: identical rows and fixed icon slots. */
+@media(min-width:900px){
+.website .nav button[data-tab]{display:flex;flex-direction:row;align-items:center;justify-content:flex-start;gap:12px;flex:0 0 54px;width:100%;height:54px;min-height:54px;padding:11px 14px;margin:0;border-radius:12px;font-size:15px;font-weight:750;line-height:20px;text-align:left}
+.website .nav button[data-tab] i{display:flex;align-items:center;justify-content:center;flex:0 0 32px;width:32px;height:32px;padding:0;margin:0;font-size:24px;line-height:32px;font-style:normal}
+.website .nav button[data-tab] i svg{display:block;width:24px;height:24px;flex:none}
+.website .nav button[data-tab].active{background:#dfe9d8;color:#1d5c3c}
+.website .nav .nav-unread{flex:none;position:static;margin-left:auto}
+}
