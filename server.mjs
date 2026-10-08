@@ -505,7 +505,7 @@ async function weatherHours(city='Краснодар'){
 }
 async function api(req,res,url){
   const webResponse=await webAuth.route(req,res,url,body);if(webResponse!==null)return send(res,200,webResponse);
-  if(url.pathname==='/api/config')return send(res,200,{demo:!process.env.BOT_TOKEN,botUsername:process.env.BOT_USERNAME||'',cities,website:true,emailRegistration:true,emailRecovery:emailConfigured(),version:'0.32.2'});
+  if(url.pathname==='/api/config')return send(res,200,{demo:!process.env.BOT_TOKEN,botUsername:process.env.BOT_USERNAME||'',cities,website:true,emailRegistration:true,emailRecovery:emailConfigured(),version:'0.32.5'});
   if(req.method==='GET'&&url.pathname==='/api/weather'){const city=url.searchParams.get('city')||'Краснодар';if(!cities.includes(city))fail(400,'Выберите город из списка');const hours=await weatherHours(city);return send(res,200,{hours,status:weatherCaches.get(city).status,city,source:'Open-Meteo'});}
   const identity=authenticate(req);addUser.run(identity.id,identity.name,identity.username,now());
   const me=userDTO(identity.id);
