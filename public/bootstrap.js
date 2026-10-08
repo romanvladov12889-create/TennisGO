@@ -10,4 +10,4 @@ if (launch && !window.Telegram?.WebApp) {
   });
 }
 if(launch&&!window.Telegram?.WebApp?.initData){for(let i=0;i<20&&!window.Telegram?.WebApp?.initData;i++)await new Promise(resolve=>setTimeout(resolve,50));}
-await import('./app.js?v=0321');
+await import('./app.js?v=0322');

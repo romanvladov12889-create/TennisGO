@@ -1,4 +1,5 @@
 import http from 'node:http';
+import {deleteAccount} from './account.mjs';
 import {createClubs} from './clubs.mjs';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -504,13 +505,17 @@ async function weatherHours(city='Краснодар'){
 }
 async function api(req,res,url){
   const webResponse=await webAuth.route(req,res,url,body);if(webResponse!==null)return send(res,200,webResponse);
-  if(url.pathname==='/api/config')return send(res,200,{demo:!process.env.BOT_TOKEN,botUsername:process.env.BOT_USERNAME||'',cities,website:true,emailRegistration:true,emailRecovery:emailConfigured(),version:'0.32.1'});
+  if(url.pathname==='/api/config')return send(res,200,{demo:!process.env.BOT_TOKEN,botUsername:process.env.BOT_USERNAME||'',cities,website:true,emailRegistration:true,emailRecovery:emailConfigured(),version:'0.32.2'});
   if(req.method==='GET'&&url.pathname==='/api/weather'){const city=url.searchParams.get('city')||'Краснодар';if(!cities.includes(city))fail(400,'Выберите город из списка');const hours=await weatherHours(city);return send(res,200,{hours,status:weatherCaches.get(city).status,city,source:'Open-Meteo'});}
   const identity=authenticate(req);addUser.run(identity.id,identity.name,identity.username,now());
   const me=userDTO(identity.id);
   db.prepare("UPDATE users SET last_seen_at=? WHERE id=? AND (last_seen_at IS NULL OR last_seen_at<?)").run(now(),me.id,new Date(Date.now()-60000).toISOString());
   if(!me.blockedAt)db.prepare('INSERT OR IGNORE INTO activity_days VALUES(?,?)').run(me.id,new Intl.DateTimeFormat('en-CA',{timeZone:'Europe/Moscow',year:'numeric',month:'2-digit',day:'2-digit'}).format(new Date()));
   if(req.method==='GET'&&url.pathname==='/api/me')return send(res,200,{user:{...me,email:db.prepare('SELECT email FROM web_emails WHERE user_id=?').get(me.id)?.email||null,emailVerified:!!db.prepare('SELECT verified_at FROM web_emails WHERE user_id=?').get(me.id)?.verified_at}});
+  if(url.pathname==='/api/account'&&req.method==='DELETE'){
+    if((await body(req)).confirmation!=='DELETE')fail(400,'Подтвердите удаление аккаунта');
+    return send(res,200,deleteAccount(db,me.id,mediaDir));
+  }
   if(me.blockedAt&&!isAdmin(me.id))fail(403,'Ваш аккаунт заблокирован администратором');
   if(req.method==='GET'&&url.pathname==='/api/sync')return send(res,200,db.prepare('SELECT revision FROM app_sync WHERE id=1').get());
   if(req.method==='GET'&&url.pathname==='/api/support'){
