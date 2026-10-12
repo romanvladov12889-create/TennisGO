@@ -530,12 +530,12 @@ async function weatherHours(city='Краснодар'){
 }
 async function api(req,res,url){
   const webResponse=await webAuth.route(req,res,url,body);if(webResponse!==null)return send(res,200,webResponse);
-  if(url.pathname==='/api/config')return send(res,200,{demo:!process.env.BOT_TOKEN,botUsername:process.env.BOT_USERNAME||'',cities,website:true,emailRegistration:true,emailRecovery:emailConfigured(),version:'0.33.0'});
+  if(url.pathname==='/api/config')return send(res,200,{demo:!process.env.BOT_TOKEN,botUsername:process.env.BOT_USERNAME||'',cities,website:true,emailRegistration:true,emailRecovery:emailConfigured(),version:'0.33.1'});
   if(req.method==='GET'&&url.pathname==='/api/weather'){const city=url.searchParams.get('city')||'Краснодар';if(!cities.includes(city))fail(400,'Выберите город из списка');const hours=await weatherHours(city);return send(res,200,{hours,status:weatherCaches.get(city).status,city,source:'Open-Meteo'});}
   const identity=authenticate(req);addUser.run(identity.id,identity.name,identity.username,now());
   const me=userDTO(identity.id);
   db.prepare("UPDATE users SET last_seen_at=? WHERE id=? AND (last_seen_at IS NULL OR last_seen_at<?)").run(now(),me.id,new Date(Date.now()-60000).toISOString());
-  if(!me.blockedAt)db.prepare('INSERT OR IGNORE INTO activity_days VALUES(?,?)').run(me.id,new Intl.DateTimeFormat('en-CA',{timeZone:'Europe/Moscow',year:'numeric',month:'2-digit',day:'2-digit'}).format(new Date()));
+  if(me.registered&&!me.blockedAt)db.prepare('INSERT OR IGNORE INTO activity_days VALUES(?,?)').run(me.id,new Intl.DateTimeFormat('en-CA',{timeZone:'Europe/Moscow',year:'numeric',month:'2-digit',day:'2-digit'}).format(new Date()));
   if(req.method==='GET'&&url.pathname==='/api/me')return send(res,200,{user:{...me,email:db.prepare('SELECT email FROM web_emails WHERE user_id=?').get(me.id)?.email||null,emailVerified:!!db.prepare('SELECT verified_at FROM web_emails WHERE user_id=?').get(me.id)?.verified_at}});
   if(url.pathname==='/api/account'&&req.method==='DELETE'){
     if((await body(req)).confirmation!=='DELETE')fail(400,'Подтвердите удаление аккаунта');
@@ -718,13 +718,15 @@ async function api(req,res,url){
     const total=count('SELECT COUNT(*) AS n FROM users WHERE registration_version>=2');
     const newToday=count('SELECT COUNT(*) AS n FROM users WHERE registration_version>=2 AND registered_at>=?',start.toISOString()),new7=count('SELECT COUNT(*) AS n FROM users WHERE registration_version>=2 AND registered_at>=?',cut7),new30=count('SELECT COUNT(*) AS n FROM users WHERE registration_version>=2 AND registered_at>=?',cut30);
     const onlineNow=count("SELECT COUNT(*) AS n FROM users WHERE registration_version>=2 AND blocked_at IS NULL AND last_seen_at>?",new Date(Date.now()-120000).toISOString());
-    const activeToday=count('SELECT COUNT(*) AS n FROM activity_days WHERE day=?',today),active7=count('SELECT COUNT(DISTINCT user_id) AS n FROM activity_days WHERE day>=?',dayShift(-6)),active30=count('SELECT COUNT(DISTINCT user_id) AS n FROM activity_days WHERE day>=?',dayShift(-29));
+    const activityScope="FROM activity_days a JOIN users u ON u.id=a.user_id WHERE u.registration_version>=2 AND a.day>=substr(datetime(COALESCE(u.registered_at,u.created_at),'+3 hours'),1,10)";
+    const activeToday=count('SELECT COUNT(DISTINCT a.user_id) AS n '+activityScope+' AND a.day=?',today),active7=count('SELECT COUNT(DISTINCT a.user_id) AS n '+activityScope+' AND a.day BETWEEN ? AND ?',dayShift(-6),today),active30=count('SELECT COUNT(DISTINCT a.user_id) AS n '+activityScope+' AND a.day BETWEEN ? AND ?',dayShift(-29),today);
+    const activityTrackedSince=db.prepare('SELECT MIN(a.day) AS day '+activityScope).get().day||today;
     const events=db.prepare("SELECT type,substr(datetime(at,'+3 hours'),1,10) AS day,COUNT(*) AS n FROM (SELECT 'games' AS type,created_at AS at FROM games UNION ALL SELECT 'trainings',created_at FROM trainings UNION ALL SELECT 'joins',joined_at FROM participants UNION ALL SELECT 'joins',joined_at FROM training_participants UNION ALL SELECT 'messages',created_at FROM direct_messages UNION ALL SELECT 'messages',created_at FROM chat_messages UNION ALL SELECT 'bookings',created_at FROM court_reservations UNION ALL SELECT 'news',published_at FROM news) WHERE at>=? GROUP BY type,day").all(cut30);
-    const activity=db.prepare('SELECT day,COUNT(*) AS n FROM activity_days WHERE day>=? GROUP BY day').all(dayShift(-29));
+    const activity=db.prepare('SELECT a.day,COUNT(DISTINCT a.user_id) AS n '+activityScope+' AND a.day BETWEEN ? AND ? GROUP BY a.day').all(dayShift(-29),today);
     const registrations=db.prepare("SELECT substr(datetime(registered_at,'+3 hours'),1,10) AS day,COUNT(*) AS n FROM users WHERE registration_version>=2 AND registered_at>=? GROUP BY day").all(cut30);
-    const daily=Array.from({length:30},(_,i)=>{const day=dayShift(i-29),counts=Object.fromEntries(events.filter(e=>e.day===day).map(e=>[e.type,e.n]));return {day,new:registrations.find(a=>a.day===day)?.n||0,active:activity.find(a=>a.day===day)?.n||0,games:counts.games||0,trainings:counts.trainings||0,joins:counts.joins||0,messages:counts.messages||0,bookings:counts.bookings||0,news:counts.news||0};});
+    const daily=Array.from({length:30},(_,i)=>{const day=dayShift(i-29),counts=Object.fromEntries(events.filter(e=>e.day===day).map(e=>[e.type,e.n]));return {day,new:registrations.find(a=>a.day===day)?.n||0,active:day<activityTrackedSince?null:activity.find(a=>a.day===day)?.n||0,games:counts.games||0,trainings:counts.trainings||0,joins:counts.joins||0,messages:counts.messages||0,bookings:counts.bookings||0,news:counts.news||0};});
     const sum=key=>daily.slice(-7).reduce((n,d)=>n+d[key],0);
-    return send(res,200,{total,newToday,new7,new30,onlineNow,activeToday,active7,active30,last7:{games:sum('games'),trainings:sum('trainings'),joins:sum('joins'),messages:sum('messages'),bookings:sum('bookings'),news:sum('news')},daily});
+    return send(res,200,{total,newToday,new7,new30,onlineNow,activeToday,active7,active30,timeZone:'Europe/Moscow',activityTrackedSince,last7:{games:sum('games'),trainings:sum('trainings'),joins:sum('joins'),messages:sum('messages'),bookings:sum('bookings'),news:sum('news')},daily});
   }
   if(url.pathname==='/api/admin/listings'&&req.method==='GET'){
     if(!isAdmin(me.id))fail(403,'Доступно только администратору');
