@@ -118,6 +118,7 @@ for(const table of ['games','trainings']){
 const newsColumns=new Set(db.prepare('PRAGMA table_info(news)').all().map(column=>column.name));
 if(!newsColumns.has('sport'))db.exec("ALTER TABLE news ADD COLUMN sport TEXT NOT NULL DEFAULT 'all'");
 if(!newsColumns.has('image_path'))db.exec('ALTER TABLE news ADD COLUMN image_path TEXT');
+if(!newsColumns.has('image_data'))db.exec('ALTER TABLE news ADD COLUMN image_data TEXT');
 db.exec(`
  CREATE TABLE IF NOT EXISTS chat_message_hides(user_id TEXT NOT NULL REFERENCES users(id),kind TEXT NOT NULL CHECK(kind IN ('direct','game','training')),message_id TEXT NOT NULL,PRIMARY KEY(user_id,kind,message_id));
  CREATE INDEX IF NOT EXISTS direct_sender_pair ON direct_messages(sender_id,recipient_id,created_at DESC);
@@ -529,7 +530,7 @@ async function weatherHours(city='Краснодар'){
 }
 async function api(req,res,url){
   const webResponse=await webAuth.route(req,res,url,body);if(webResponse!==null)return send(res,200,webResponse);
-  if(url.pathname==='/api/config')return send(res,200,{demo:!process.env.BOT_TOKEN,botUsername:process.env.BOT_USERNAME||'',cities,website:true,emailRegistration:true,emailRecovery:emailConfigured(),version:'0.32.7'});
+  if(url.pathname==='/api/config')return send(res,200,{demo:!process.env.BOT_TOKEN,botUsername:process.env.BOT_USERNAME||'',cities,website:true,emailRegistration:true,emailRecovery:emailConfigured(),version:'0.33.0'});
   if(req.method==='GET'&&url.pathname==='/api/weather'){const city=url.searchParams.get('city')||'Краснодар';if(!cities.includes(city))fail(400,'Выберите город из списка');const hours=await weatherHours(city);return send(res,200,{hours,status:weatherCaches.get(city).status,city,source:'Open-Meteo'});}
   const identity=authenticate(req);addUser.run(identity.id,identity.name,identity.username,now());
   const me=userDTO(identity.id);
@@ -649,11 +650,14 @@ async function api(req,res,url){
   }
   if(url.pathname==='/api/news'&&req.method==='POST'){
     if(!isAdmin(me.id))fail(403,'Публикация доступна только администратору');
-    const b=await body(req),title=str(b.title,120),content=str(b.body,2000),sport=b.sport||'all';
+    const b=await body(req,400000),title=str(b.title,120),content=str(b.body,2000),sport=b.sport||'all';
     if(title.length<5||content.length<10)fail(400,'Введите заголовок от 5 и текст от 10 символов');
     if(!['all','tennis','padel'].includes(sport))fail(400,'Неверный вид спорта новости');
+    const photo=b.photoData||null;
+    if(photo){if(typeof photo!=='string'||photo.length>350000||!/^data:image\/jpeg;base64,[A-Za-z0-9+/]+={0,2}$/.test(photo))fail(400,'Выберите фотографию JPG или PNG');const bytes=Buffer.from(photo.split(',')[1],'base64');if(bytes.length<4||bytes[0]!==255||bytes[1]!==216||bytes.at(-2)!==255||bytes.at(-1)!==217)fail(400,'Фото не распознано');}
     const item={id:crypto.randomUUID(),title,body:content,publishedAt:now(),sport,imagePath:null};
-    db.prepare('INSERT INTO news(id,author_id,title,body,published_at,sport,image_path) VALUES(?,?,?,?,?,?,?)').run(item.id,me.id,title,content,item.publishedAt,sport,null);
+    if(photo)item.imagePath='/news-images/'+item.id;
+    db.prepare('INSERT INTO news(id,author_id,title,body,published_at,sport,image_path,image_data) VALUES(?,?,?,?,?,?,?,?)').run(item.id,me.id,title,content,item.publishedAt,sport,item.imagePath,photo);
     broadcast(`Новость: ${title}`,'news',sport);
     return send(res,201,{item});
   }
@@ -1322,6 +1326,13 @@ const server=http.createServer(async(req,res)=>{
   try{
     const url=new URL(req.url,'http://localhost');
     if(url.pathname.startsWith('/api/'))return await api(req,res,url);
+    const newsImage=url.pathname.match(/^\/news-images\/([a-f0-9-]{36})$/i);
+    if(newsImage){
+      if(req.method!=='GET'&&req.method!=='HEAD')fail(405,'Метод не поддерживается');
+      const photo=db.prepare('SELECT image_data FROM news WHERE id=?').get(newsImage[1])?.image_data;
+      if(!photo)fail(404,'Фото новости не найдено');
+      const bytes=Buffer.from(photo.split(',')[1],'base64');res.writeHead(200,{'Content-Type':'image/jpeg','Content-Length':bytes.length,'Cache-Control':'public, max-age=300','X-Content-Type-Options':'nosniff'});return res.end(req.method==='HEAD'?undefined:bytes);
+    }
     const avatarMatch=url.pathname.match(/^\/avatars\/([a-zA-Z0-9-]{1,60})$/);
     if(avatarMatch){
       if(req.method!=='GET'&&req.method!=='HEAD')fail(405,'Метод не поддерживается');
@@ -1438,9 +1449,19 @@ async function handleBotUpdate(update){
   }catch(error){message=error.message;}
   await botMethod('answerCallbackQuery',{callback_query_id:query.id,text:message.slice(0,190),show_alert:false});
 }
+let botMenuConfigured=false,nextBotMenuAttempt=0;
+async function configureBotMenu(){
+ if(!process.env.BOT_TOKEN)return false;
+ const current=await botMethod('getChatMenuButton',{});
+ if(current?.type==='web_app'&&current.text==='Запустить приложение')return true;
+ const raw=current?.type==='web_app'?current.web_app?.url:process.env.APP_URL||(process.env.RAILWAY_PUBLIC_DOMAIN?'https://'+process.env.RAILWAY_PUBLIC_DOMAIN:'');
+ let url;try{url=new URL(raw);}catch{return false;}if(url.protocol!=='https:')return false;
+ await botMethod('setChatMenuButton',{menu_button:{type:'web_app',text:'Запустить приложение',web_app:{url:url.toString()}}});return true;
+}
 async function botPollLoop(){
   if(!process.env.BOT_TOKEN)return;
   try{
+    if(!botMenuConfigured&&Date.now()>=nextBotMenuAttempt){nextBotMenuAttempt=Date.now()+60000;try{botMenuConfigured=await configureBotMenu();}catch(error){console.warn('Telegram menu setup unavailable:',error.message);}}
     const offset=Number(db.prepare("SELECT value FROM bot_state WHERE key='offset'").get()?.value||0);
     const updates=await botMethod('getUpdates',{offset,timeout:20,allowed_updates:['callback_query','message']},26000);
     for(const update of updates){
@@ -1451,4 +1472,4 @@ async function botPollLoop(){
   finally{setTimeout(botPollLoop,1500).unref();}
 }
 if(import.meta.url===`file://${process.argv[1]}`){server.listen(Number(process.env.PORT||3000),'0.0.0.0',()=>console.log(`Tennis GO Mini App: http://localhost:${process.env.PORT||3000} (${process.env.BOT_TOKEN?'Telegram':'demo'})`));if(process.env.BOT_TOKEN)setTimeout(botPollLoop,1500).unref();}
-export {server,db,rewards,webAuth,verifyInitData,sendNextBotMessage,processEventReminders,processTrainingAds,processMatchPrompts,processReputationPrompts,recordGameFeedback,recordMatchVote,handleBotUpdate,notificationButton,earliestStart};
+export {server,db,rewards,webAuth,verifyInitData,sendNextBotMessage,processEventReminders,processTrainingAds,processMatchPrompts,processReputationPrompts,recordGameFeedback,recordMatchVote,handleBotUpdate,configureBotMenu,notificationButton,earliestStart};
