@@ -197,6 +197,30 @@ if(db.prepare('INSERT OR IGNORE INTO content_seeds(key,created_at) VALUES(?,?)')
  db.prepare('INSERT OR IGNORE INTO news(id,author_id,title,body,published_at,sport,image_path) VALUES(?,?,?,?,?,?,?)').run(campaignId,'tennis-go-system','Играешь — получаешь призы 🎾','Матчи, новые соперники, тренировки и посещения партнёрских кортов теперь приносят бонусные баллы. Обменивайте их на призы Tennis GO!\n\n200 баллов — туба мячей, 5 призов.\n500 баллов — футболка или кепка, всего 3 приза.\n1 000 баллов — худи или спортивная сумка, всего 3 приза.\n10 000 баллов — профессиональная ракетка, 1 приз.\n\nПризы ограничены. Баллы списываются при обмене. Топ обновляется по заработанным баллам и не снижается при обмене. Нажмите «Баллы и призы», чтобы посмотреть задания, баланс и правила.',now(),'all',null);
  broadcast('Новая акция Tennis GO: играешь — получаешь призы! Задания, баллы и топ-3 уже в новостях.','news');
 }
+// One-time announcement, including for existing databases. No automatic broadcast.
+const playNewsId='03260000-0000-4000-8000-000000000001';
+db.exec('BEGIN');
+try{
+ if(db.prepare('INSERT OR IGNORE INTO content_seeds(key,created_at) VALUES(?,?)').run('play-and-prizes-0326',now()).changes){
+  db.prepare('INSERT OR IGNORE INTO users(id,name,username,created_at) VALUES(?,?,?,?)').run('tennis-go-system','Tennis GO','',now());
+  db.prepare('INSERT OR IGNORE INTO news(id,author_id,title,body,published_at,sport,image_path) VALUES(?,?,?,?,?,?,?)').run(playNewsId,'tennis-go-system','Создавайте игры, тренируйтесь и получайте призы 🎾',`Не ждите приглашения — создайте свою игру в Tennis GO! Выберите теннис или падел, корт, дату и уровень NTRP, пригласите партнёров и выходите на площадку.
+
+Хотите улучшить технику? Откройте раздел «Играть → Тренировки», выберите тренера и удобное время и отправьте заявку на участие.
+
+За подтверждённые матчи и проведённые тренировки можно получать бонусные баллы по правилам программы и обменивать их на призы: мячи, мерч и профессиональную ракетку. Сама публикация игры или заявка на тренировку баллов не приносит: важно действительно сыграть или посетить занятие и пройти подтверждение.
+
+Ваш баланс, задания, условия начисления и доступные призы — в разделе «Баллы и призы» профиля. Призы ограничены: смотрите актуальные остатки в приложении.
+
+Мы ведём переговоры с кортами, чтобы вы могли бронировать площадки прямо в Tennis GO в один клик. Подключение площадок продолжается; о доступных кортах и запуске сообщим отдельно. До этого бронирование нужно уточнять у площадки.
+
+Создавайте игры, записывайтесь на тренировки и приглашайте друзей — развиваем теннисное комьюнити вместе!`,now(),'all','/assets/news-play-and-prizes-v1.png');
+ }
+ db.exec('COMMIT');
+}catch(error){db.exec('ROLLBACK');throw error;}
+// Apply selected cover once to an already published announcement.
+if(db.prepare('INSERT OR IGNORE INTO content_seeds(key,created_at) VALUES(?,?)').run('play-and-prizes-cover-v1',now()).changes){
+ db.prepare('UPDATE news SET image_path=? WHERE id=?').run('/assets/news-play-and-prizes-v1.png',playNewsId);
+}
 let botSending=false,botPausedUntil=0;
 function notificationButton(link){
   const raw=process.env.APP_URL||process.env.RAILWAY_PUBLIC_DOMAIN&&`https://${process.env.RAILWAY_PUBLIC_DOMAIN}`;
@@ -505,7 +529,7 @@ async function weatherHours(city='Краснодар'){
 }
 async function api(req,res,url){
   const webResponse=await webAuth.route(req,res,url,body);if(webResponse!==null)return send(res,200,webResponse);
-  if(url.pathname==='/api/config')return send(res,200,{demo:!process.env.BOT_TOKEN,botUsername:process.env.BOT_USERNAME||'',cities,website:true,emailRegistration:true,emailRecovery:emailConfigured(),version:'0.32.5'});
+  if(url.pathname==='/api/config')return send(res,200,{demo:!process.env.BOT_TOKEN,botUsername:process.env.BOT_USERNAME||'',cities,website:true,emailRegistration:true,emailRecovery:emailConfigured(),version:'0.32.7'});
   if(req.method==='GET'&&url.pathname==='/api/weather'){const city=url.searchParams.get('city')||'Краснодар';if(!cities.includes(city))fail(400,'Выберите город из списка');const hours=await weatherHours(city);return send(res,200,{hours,status:weatherCaches.get(city).status,city,source:'Open-Meteo'});}
   const identity=authenticate(req);addUser.run(identity.id,identity.name,identity.username,now());
   const me=userDTO(identity.id);

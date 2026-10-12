@@ -22,9 +22,12 @@ test('server starts and serves its API and frontend from the exact Docker COPY c
   for(const file of ['/bootstrap.js','/website.css','/app.js']){const r=await fetch(base+file);if(r.status!==200)throw new Error('Website asset unavailable: '+file);}
   const index=await fetch(base+'/');if(index.status!==200)throw new Error('Frontend unavailable');
   if(!db.prepare("SELECT 1 FROM news WHERE id='tennis-go-rewards-v1'").get())throw new Error('Campaign news missing');
+  const announcement=db.prepare("SELECT * FROM news WHERE id='03260000-0000-4000-8000-000000000001'").get();if(!announcement?.body.includes('переговоры с кортами'))throw new Error('Player announcement missing');
+  if(db.prepare("SELECT COUNT(*) AS n FROM news WHERE id='03260000-0000-4000-8000-000000000001'").get().n!==1)throw new Error('Duplicate announcement');
   }finally{await new Promise(r=>server.close(r));db.close();}`;
   const env={...process.env,DB_PATH:path.join(temp,'data','test.sqlite')};delete env.BOT_TOKEN;
   const result=spawnSync(process.execPath,['--input-type=module','-e',script],{env,encoding:'utf8',timeout:15000});
   assert.equal(result.status,0,result.stderr||result.error?.message);
+  const restart=spawnSync(process.execPath,['--input-type=module','-e',script],{env,encoding:'utf8',timeout:15000});assert.equal(restart.status,0,restart.stderr||restart.error?.message);
  }finally{rmSync(temp,{recursive:true,force:true});}
 });

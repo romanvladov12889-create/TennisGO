@@ -84,3 +84,15 @@ test('coach proximity uses nearest profile court and respects missing location/c
  assert.match(run("coachDistanceBadge(['far','near'])"),/Рядом/);assert.match(run("coachDistanceBadge(['far'])"),/Далеко/);assert.equal(run("coachDistanceBadge(['unknown'])"),'');assert.equal(run('coachDistanceBadge([])'),'');
  run('state.location=null');assert.equal(run("coachDistanceBadge(['near'])"),'');
 });
+
+test('event recommendations prioritize games, NTRP suitability and the event court distance',()=>{
+ const {run}=ui();run(`state.me={id:'me',role:'player',ntrpLevel:3,city:'Краснодар',gender:'male'};state.location={latitude:45,longitude:39};state.catalog.courts=[{id:'near',latitude:45.01,longitude:39},{id:'far',latitude:46,longitude:39}];globalThis.base={sport:'tennis',city:'Краснодар',members:[],seats:2,opponentGender:'any',levelMin:2.5,levelMax:3.5,creatorNtrp:3,startsAt:new Date(Date.now()+86400000).toISOString()};state.games=[{...base,id:'far',courtId:'far'},{...base,id:'near',courtId:'near',startsAt:new Date(Date.now()+172800000).toISOString()}];state.trainings=[{...base,id:'training',courtId:'near',coachId:'coach',ntrpMin:2,ntrpMax:4,startsAt:new Date(Date.now()+3600000).toISOString()}];`);
+ assert.deepEqual(Array.from(run('recommendedEvents().map(e=>e.item.id)')),['near','far','training']);
+ run("state.games.push({...base,id:'wrong-level',courtId:'near',levelMin:4,levelMax:5});state.games.push({...base,id:'no-location',courtId:'unknown'});");
+ assert.deepEqual(Array.from(run('visibleGames().map(g=>g.id)')),['near','far','no-location','wrong-level']);
+ run('state.location=null');assert.deepEqual(Array.from(run('visibleGames().map(g=>g.id)')),['far','no-location','near','wrong-level']);
+});
+test('without player NTRP the list falls back to distance, and nearest own appointment stays chronological',()=>{
+ const {run}=ui();run(`state.me={id:'me',role:'player',city:'Краснодар',gender:'male',ntrpLevel:null};state.location={latitude:45,longitude:39};state.catalog.courts=[{id:'near',latitude:45.01,longitude:39},{id:'far',latitude:46,longitude:39}];globalThis.base={sport:'tennis',city:'Краснодар',members:[],seats:2,opponentGender:'any',startsAt:new Date(Date.now()+86400000).toISOString(),levelMin:4,levelMax:5};state.games=[{...base,id:'far',courtId:'far',joined:true},{...base,id:'near',courtId:'near',joined:true}];state.trainings=[{...base,id:'earlier-training',courtId:'far',joined:true,startsAt:new Date(Date.now()+3600000).toISOString()}];`);
+ assert.deepEqual(Array.from(run('visibleGames().map(g=>g.id)')),['near','far']);assert.equal(run('nextEvent().item.id'),'earlier-training');
+});
