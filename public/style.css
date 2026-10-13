@@ -609,3 +609,36 @@ button:active{transform:scale(.98)}
 .home-plan-art,.home-plan-art.training-art,.home-plan-art.doubles-art{width:116px;height:150px;right:7px;bottom:12px;filter:none}
 .detail-cover>.detail-art,.detail-cover>.detail-art.doubles-art{width:108px;height:128px;right:12px;bottom:8px;filter:none}
 @media(max-width:360px){.home-plan-art,.home-plan-art.training-art,.home-plan-art.doubles-art{width:94px;height:132px;right:5px;bottom:14px}.detail-cover>.detail-art,.detail-cover>.detail-art.doubles-art{width:94px;height:114px;right:8px}}
+
+/* Compact recommendations: safe wrapping on small phones, visible training venue. */
+.home-section .compact-card{padding:10px 11px;margin-bottom:7px;overflow-wrap:anywhere}
+.home-section .compact-training{align-items:flex-start;gap:8px}.home-section .compact-training>.avatar{width:32px;height:32px;margin-top:2px}
+.home-section .compact-main{display:block;min-width:0;max-width:100%}
+.home-section .compact-line{gap:3px 7px;min-width:0}
+.home-section .compact-line>span,.home-section .compact-kicker,.home-section .compact-date{flex:0 1 auto;min-width:0;max-width:100%;white-space:normal;line-height:1.35;overflow-wrap:anywhere}
+.home-section .compact-date .weather-missing,.home-section .compact-date .weather-badge{white-space:normal}
+.home-section .compact-title{margin-top:5px;font-size:12px;line-height:1.3}
+.home-section .compact-trainer{margin-top:4px;font-size:12px;line-height:1.3}
+.home-section .compact-trainer .organizer-link,.home-section .compact-game .organizer-link{max-width:100%;white-space:normal;overflow-wrap:anywhere;font-size:11px}
+.home-section .compact-court{display:block;font-size:12px;font-weight:650;line-height:1.35;margin-top:3px;color:#28573f;overflow-wrap:anywhere}
+.home-section .compact-training .compact-format{font-size:10px;margin-top:3px}
+.home-section .compact-footer,.home-section .compact-training .compact-footer{display:flex;flex-wrap:wrap;align-items:center;gap:5px 8px;margin-top:7px;font-size:10px}
+.home-section .compact-footer>span{max-width:100%;min-width:0;white-space:normal;overflow-wrap:anywhere}
+.home-section .compact-places{flex-wrap:wrap}.home-section .compact-price{margin-left:auto}
+.home-section .distance-badge{max-width:100%;white-space:normal;overflow-wrap:anywhere;font-size:9px;padding:3px 5px;margin:4px 4px 0 0}
+.home-section .reputation-badge,.home-section .booking-status{max-width:100%;white-space:normal;overflow-wrap:anywhere;font-size:9px}
+
+/* Home cards: court names remain visible at every screen width. */
+.home-plan.has-art{display:grid;grid-template-columns:minmax(0,1fr) 82px;align-items:center;gap:10px;padding:14px;min-height:0}
+.home-plan.has-art>.home-plan-copy{display:grid;gap:6px;min-width:0;max-width:none}
+.home-plan.has-art .home-plan-copy>*{max-width:none;min-width:0;white-space:normal;overflow-wrap:anywhere}
+.home-plan.has-art .home-plan-copy strong{font-size:16px;line-height:1.3}
+.home-plan-copy .home-event-date{font-size:12px;line-height:1.35}
+.home-plan-copy .home-event-court{font-size:12px;line-height:1.4;font-weight:650}
+.home-plan-copy .home-event-coach{font-size:11px;line-height:1.4}
+.home-plan.has-art .home-plan-copy b{font-size:11px;line-height:1.4}
+.home-plan.has-art>.home-plan-art{position:static;width:82px;height:auto;max-height:140px;margin:0;align-self:center;filter:none}
+.home-section .compact-main strong,.home-section .organizer-link strong{white-space:normal;overflow:visible;text-overflow:clip;overflow-wrap:anywhere}
+.home-section .compact-footer span{white-space:normal;min-width:0;overflow-wrap:anywhere}
+.home-section .compact-card .compact-court{display:block;font-size:12px;line-height:1.4;margin:4px 0;white-space:normal;overflow-wrap:anywhere}
+@media(max-width:360px){.home-plan.has-art{grid-template-columns:minmax(0,1fr) 64px;padding:12px;gap:8px}.home-plan.has-art>.home-plan-art{width:64px}.home-plan.has-art .home-plan-copy strong{font-size:15px}}
