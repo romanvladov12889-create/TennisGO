@@ -8,7 +8,7 @@ import {spawnSync} from 'node:child_process';
 
 const temporary=mkdtempSync(path.join(tmpdir(),'tennis-reputation-'));
 process.env.DB_PATH=path.join(temporary,'test.sqlite');delete process.env.BOT_TOKEN;
-const {server,db,processReputationPrompts}=await import('../server.mjs');
+const {server,db,processReputationPrompts,handleBotUpdate,sendNextBotMessage}=await import('../server.mjs');
 await new Promise(resolve=>server.listen(0,'127.0.0.1',resolve));
 const base=`http://127.0.0.1:${server.address().port}/api`;
 const [a,b,c,d,outsider,coach]=['a','b','c','d','outsider','coach'].map(x=>'demo-reputation-'+x);
@@ -50,6 +50,43 @@ try{
   assert.ok(!pending.data.games.some(g=>[single,future,cancelled,alone].includes(g.id)));
   const count=db.prepare('SELECT COUNT(*) AS n FROM reputation_prompts').get().n;processReputationPrompts();assert.equal(db.prepare('SELECT COUNT(*) AS n FROM reputation_prompts').get().n,count);
   assert.ok(db.prepare('SELECT body FROM notifications WHERE user_id=?').all(b).some(n=>n.body.includes('Поставьте 1')));
+ });
+ await test('bot sends 1–5 buttons, upgrades old prompts once, saves scores and optional replies',async()=>{
+  const numeric='100200300',other='100200301';
+  for(const id of [numeric,other])db.prepare('INSERT INTO users(id,name,created_at,role,registration_version) VALUES(?,?,?,\'player\',2)').run(id,id,new Date().toISOString());
+  const id=game([numeric,other]);
+  db.prepare('INSERT INTO reputation_prompts(game_id,user_id,prompted_at) VALUES(?,?,?)').run(id,numeric,new Date().toISOString());
+  const realFetch=globalThis.fetch,calls=[];
+  process.env.BOT_TOKEN='test-only-token';process.env.APP_URL='https://tennis.example';
+  globalThis.fetch=async(url,options)=>{
+    if(!String(url).startsWith('https://api.telegram.org/'))return realFetch(url,options);
+    calls.push({method:String(url).split('/').at(-1),payload:JSON.parse(options.body)});
+    return {json:async()=>({ok:true,result:{message_id:777}})};
+  };
+  const callback=(from=numeric,chat=numeric,score=4)=>({callback_query:{id:'callback-test',from:{id:from},message:{message_id:42,chat:{id:chat,type:'private'}},data:`gf:${id}:${score}`}});
+  try{
+    processReputationPrompts();processReputationPrompts();
+    const queued=db.prepare('SELECT * FROM bot_outbox WHERE user_id=?').all(numeric);assert.equal(queued.length,1);
+    const keyboard=JSON.parse(queued[0].reply_markup).inline_keyboard;
+    assert.deepEqual(keyboard[0].map(b=>b.text),['1','2','3','4','5']);assert.equal(keyboard[0][3].callback_data,`gf:${id}:4`);
+    assert.equal(new URL(keyboard[1][0].web_app.url).searchParams.get('start'),`feedback_${id}`);
+    await sendNextBotMessage();assert.ok(calls.find(c=>c.method==='sendMessage'&&c.payload.reply_markup?.inline_keyboard));
+    await handleBotUpdate(callback(numeric,'-123'));assert.equal(reputation(other).count,0);
+    await handleBotUpdate(callback());assert.deepEqual({...reputation(other)},{score:4,count:1});assert.equal(reputation(numeric).count,0);
+    assert.ok(calls.some(c=>c.method==='editMessageReplyMarkup'&&c.payload.reply_markup.inline_keyboard.length===0));
+    await handleBotUpdate(callback());assert.equal(reputation(other).count,1);assert.match(calls.at(-1).payload.text,/уже оценили/);
+    // The same score cannot be submitted a second time through the authenticated app API.
+    const params=new URLSearchParams({auth_date:String(Math.floor(Date.now()/1000)),user:JSON.stringify({id:Number(numeric),first_name:'Игрок'})});
+    const check=[...params].sort(([a],[b])=>a.localeCompare(b)).map(([k,v])=>`${k}=${v}`).join('\n');
+    const secret=crypto.createHmac('sha256','WebAppData').update(process.env.BOT_TOKEN).digest();
+    params.set('hash',crypto.createHmac('sha256',secret).update(check).digest('hex'));
+    const duplicate=await realFetch(base+'/games/'+id+'/feedback',{method:'POST',headers:{Authorization:'tma '+params,'content-type':'application/json'},body:JSON.stringify({score:1})});assert.equal(duplicate.status,409);
+    const reply={message:{chat:{id:Number(numeric),type:'private'},from:{id:Number(numeric)},reply_to_message:{message_id:777},text:'Отличная игра'}};
+    await handleBotUpdate({...reply,message:{...reply.message,from:{id:Number(other)}}});
+    assert.equal(db.prepare('SELECT body FROM game_feedback WHERE game_id=? AND user_id=?').get(id,numeric).body,'');
+    await handleBotUpdate(reply);await handleBotUpdate({...reply,message:{...reply.message,text:'Повтор'}});
+    assert.equal(db.prepare('SELECT body FROM game_feedback WHERE game_id=? AND user_id=?').get(id,numeric).body,'Отличная игра');assert.equal(reputation(other).count,1);
+  }finally{globalThis.fetch=realFetch;delete process.env.BOT_TOKEN;delete process.env.APP_URL;}
  });
  const training=crypto.randomUUID(),when=new Date(Date.now()-10800000).toISOString();
  db.prepare('INSERT INTO trainings(id,coach_id,format,seats,court_id,starts_at,duration,price,note,created_at,sport) VALUES(?,?,?,4,?,?,60,1500,?,?,?)').run(training,coach,'group','dinamo',when,'',when,'tennis');
